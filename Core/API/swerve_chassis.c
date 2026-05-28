@@ -107,6 +107,49 @@ void Swerve_Chassis_Update(SwerveChassis* chassis)
 
     swheel.ik(&chassis->kine);
 
+    /* ---------------- 【核心修改点】仅在 wz 触发时，调换 ID 5/7 的 wz 方向并多转 90 度 ---------------- */
+    if (fabsf(chassis->kine.control.wz) > 1e-6f)
+    {
+        float hx = chassis->model.length * 0.5f;
+        float hy = chassis->model.width * 0.5f;
+        float vx = chassis->kine.control.vx;
+        float vy = chassis->kine.control.vy;
+        float inv_wz = -chassis->kine.control.wz; // 将 wz 取反
+        float offset_angle = 1.570796327f;        // 90 度的弧度值 (PI / 2)
+
+        // 1. 重新计算 FL (Index 0, 对应 ID 5): 坐标 x = hx, y = hy
+        float vix0 = vx - inv_wz * hy;
+        float viy0 = vy + inv_wz * hx;
+        float spd0 = sqrtf(vix0 * vix0 + viy0 * viy0);
+        chassis->kine.control.wheels[0].wheel_omega = spd0 / chassis->model.wheel_radius;
+        if (spd0 > 1e-6f) {
+            float angle0 = atan2f(viy0, vix0) + offset_angle;
+            // 确保角度范围在 (-PI, PI] 内
+            if (angle0 > 3.141592654f) angle0 -= 6.283185307f;
+            chassis->kine.control.wheels[0].steer_angle = angle0;
+        } else {
+            float angle0 = chassis->kine.control.wheels[0].steer_angle + offset_angle;
+            if (angle0 > 3.141592654f) angle0 -= 6.283185307f;
+            chassis->kine.control.wheels[0].steer_angle = angle0;
+        }
+
+        // 2. 重新计算 RR (Index 2, 对应 ID 7): 坐标 x = -hx, y = -hy
+        float vix2 = vx - inv_wz * (-hy);
+        float viy2 = vy + inv_wz * (-hx);
+        float spd2 = sqrtf(vix2 * vix2 + viy2 * viy2);
+        chassis->kine.control.wheels[2].wheel_omega = spd2 / chassis->model.wheel_radius;
+        if (spd2 > 1e-6f) {
+            float angle2 = atan2f(viy2, vix2) + offset_angle;
+            // 确保角度范围在 (-PI, PI] 内
+            if (angle2 > 3.141592654f) angle2 -= 6.283185307f;
+            chassis->kine.control.wheels[2].steer_angle = angle2;
+        } else {
+            float angle2 = chassis->kine.control.wheels[2].steer_angle + offset_angle;
+            if (angle2 > 3.141592654f) angle2 -= 6.283185307f;
+            chassis->kine.control.wheels[2].steer_angle = angle2;
+        }
+    }
+
     /* ---------------- 输出到真实电机 ---------------- */
 
     for(int i = 0; i < 4; i++)
@@ -121,7 +164,7 @@ void Swerve_Chassis_Update(SwerveChassis* chassis)
         int16_t rpm =
             (int16_t)(omega_rad_s * RADPS_TO_RPM);
 
-        Motor_Speed_Control(
+        Motor_Speed_Control_Smooth(
             rpm,
             chassis->drive_ids[i]
         );

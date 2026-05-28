@@ -1,8 +1,8 @@
 #include "servo.h"
 #include "can.h"
 #include "main.h"
-  #include <stdio.h>
-  #include <string.h>
+#include <stdio.h>
+#include <string.h>
 
 
 extern void can_send(FDCAN_HandleTypeDef* hfdcanx, uint32_t id, uint8_t* data, uint8_t len);
@@ -42,7 +42,7 @@ void RS06_Stop(FDCAN_HandleTypeDef* hfdcan, uint8_t motor_id) {
 }
 
 /**
- * @brief  3. 修改电机 ID (需重启生效) [cite: 287]
+ * @brief  3. 修改电机 ID (需重启生效)
  */
 void RS06_Change_ID(FDCAN_HandleTypeDef* hfdcan, uint8_t old_id, uint8_t new_id) {
     uint32_t id = RS06_EXT_ID(RS06_TYPE_SET_ID, new_id, old_id);
@@ -51,28 +51,28 @@ void RS06_Change_ID(FDCAN_HandleTypeDef* hfdcan, uint8_t old_id, uint8_t new_id)
 }
 
 /**
- * @brief  通信类型 6：设置电机机械零位[cite: 1]
- * @param  motor_id: 目标电机 ID
- * @note   该指令会将当前电机的机械位置强制清零。
+ * @brief  通信类型 6：设置电机机械零位
+ * @param  motor_id: 目标电机 ID
+ * @note   该指令会将当前电机的机械位置强制清零。
  */
 void RS06_Set_Mechanical_Zero(FDCAN_HandleTypeDef* hfdcan, uint8_t motor_id) {
     uint32_t id = RS06_EXT_ID(RS06_TYPE_SET_ZERO, RS06_HOST_ID, motor_id);
     
-    // 根据手册：Byte[0] = 1[cite: 1]
+    // 根据手册：Byte[0] = 1
     uint8_t data[8] = {1, 0, 0, 0, 0, 0, 0, 0}; 
     
     can_send(hfdcan, id, data, 8);
 }
 
 /**
- * @brief  通信类型 22：电机数据保存帧[cite: 1]
- * @param  motor_id: 目标电机 ID
- * @note   必须发送此帧，设置的零位（MechOffset）才会掉电不丢失。
+ * @brief  通信类型 22：电机数据保存帧
+ * @param  motor_id: 目标电机 ID
+ * @note   必须发送此帧，设置的零位（MechOffset）才会掉电不丢失。
  */
 void RS06_Save_Config(FDCAN_HandleTypeDef* hfdcan, uint8_t motor_id) {
     uint32_t id = RS06_EXT_ID(RS06_TYPE_SAVE, RS06_HOST_ID, motor_id);
     
-    // 根据手册 Type 22 字节序列要求[cite: 1]
+    // 根据手册 Type 22 字节序列要求
     // 对应数据区 1 内容：01 02 03 04 05 06 07 08 (手册示例序列)
     uint8_t data[8] = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08};
     
@@ -101,16 +101,17 @@ void RS06_Zeroing_And_Save_Process(FDCAN_HandleTypeDef* hfdcan, uint8_t motor_id
 /**
  * @brief  5. 运控模式指令：指定角度转动
  * @note   严格遵循说明书截图中的 16-12-12-12-12 位压缩格式
- * @param  hfdcan:      FDCAN 句柄
- * @param  motor_id:    目标电机 ID
- * @param  angle_rad:   目标位置 (P_des), 范围 RS06_P_MIN ~ RS06_P_MAX
- * @param  speed_rad_s: 目标速度 (V_des), 范围 RS06_V_MIN ~ RS06_V_MAX
- * @param  kp:          位置比例系数 (Kp), 范围 RS06_KP_MIN ~ RS06_KP_MAX
- * @param  kd:          速度比例系数 (Kd), 范围 RS06_KD_MIN ~ RS06_KD_MAX
- * @param  t_ff:        前馈扭矩 (T_ff), 建议范围 -36.0 到 36.0 (Nm)
  */
 void RS06_Set_Position(FDCAN_HandleTypeDef* hfdcan, uint8_t motor_id, float angle_rad, float speed_rad_s, float kp, float kd, float t_ff) {
     
+    // 【修改点 1】：如果是 5 号或 7 号电机，将其控制方向取反（位置、速度、前馈扭矩均取负数）
+    if (motor_id == 5 || motor_id == 7)
+    {
+        angle_rad   = -angle_rad;
+        speed_rad_s = -speed_rad_s;
+        t_ff        = -t_ff;
+    }
+
     // 1. 根据你的宏定义计算 ID: (0x0100 << 16) | (0xFD << 8) | motor_id
     uint32_t id = RS06_EXT_ID(RS06_TYPE_RUN, RS06_HOST_ID, motor_id);
     
@@ -142,12 +143,11 @@ void RS06_Set_Position(FDCAN_HandleTypeDef* hfdcan, uint8_t motor_id, float angl
     data[7] = t_int & 0xFF;                         // T 低 8 位
     
     // 4. 发送数据
-    // 由于 id = 0x0100FDxx > 0x7FF，你底层的 can_send 会自动选择 FDCAN_EXTENDED_ID
     can_send(hfdcan, id, data, 8);
 }
 
 /**
- * @brief  4. 设置电机运行模式 (通信类型 18 写入 0x7005) [cite: 290, 298]
+ * @brief  4. 设置电机运行模式 (通信类型 18 写入 0x7005) 
  */
 void RS06_Set_Mode(FDCAN_HandleTypeDef* hfdcan, uint8_t motor_id, uint8_t mode) {
     uint32_t id = RS06_EXT_ID(RS06_TYPE_WR_PARAM, RS06_HOST_ID, motor_id);
@@ -168,6 +168,13 @@ void RS06_Set_Mode(FDCAN_HandleTypeDef* hfdcan, uint8_t motor_id, uint8_t mode) 
  * @note   舵轮控制核心函数！适用 PP 和 CSP 模式。
  */
 void RS06_Set_Position_Target(FDCAN_HandleTypeDef* hfdcan, uint8_t motor_id, float angle_rad) {
+    
+    // 【修改点 2】：如果是 5 号或 7 号电机，将目标角度位置取反
+    if (motor_id == 5 || motor_id == 7)
+    {
+        angle_rad = -angle_rad;
+    }
+
     uint32_t id = RS06_EXT_ID(RS06_TYPE_WR_PARAM, RS06_HOST_ID, motor_id);
     uint8_t data[8] = {0};
 
@@ -186,7 +193,7 @@ void RS06_Set_Position_Target(FDCAN_HandleTypeDef* hfdcan, uint8_t motor_id, flo
  * 给出不污染主分支的测试函数，方便你在开发过程中验证 RS06 的基本功能是否正常。
  */
 void RS06_reset(void){
-uint8_t motor_ids[] = {0x05, 0x06, 0x07, 0x08};
+    uint8_t motor_ids[] = {0x05, 0x06, 0x07, 0x08};
     float targets[] = {0.00f, 0.00f, 0.00f, 0.00f};
     int motor_count = sizeof(motor_ids) / sizeof(motor_ids[0]);
 
@@ -209,7 +216,4 @@ uint8_t motor_ids[] = {0x05, 0x06, 0x07, 0x08};
     for (int i = 0; i < motor_count; i++) {
         RS06_Stop(&hfdcan2, motor_ids[i]);
     }
-
 }
-
-

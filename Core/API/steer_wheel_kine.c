@@ -179,10 +179,11 @@ static void sw_get_wheel_pos(const SteerWheelModel* model, float x[4], float y[4
     const float hy = model->width * 0.5f;
 
     /* 约定顺序: FL, FR, RR, RL */
-    x[0] = hx;  y[0] = -hy;
-    x[1] = hx;  y[1] = hy;
-    x[2] = -hx;  y[2] = hy;
-    x[3] = -hx;  y[3] = -hy;
+    /* 【核心修改点】：将 Y 轴正方向改为向左 (标准 ROS/数学右手坐标系) */
+    x[0] = hx;  y[0] = hy;   // 左前 (FL)：Y轴正半轴
+    x[1] = hx;  y[1] = -hy;  // 右前 (FR)：Y轴负半轴
+    x[2] = -hx; y[2] = -hy;  // 右后 (RR)：Y轴负半轴
+    x[3] = -hx; y[3] = hy;   // 左后 (RL)：Y轴正半轴
 }
 
 /**
