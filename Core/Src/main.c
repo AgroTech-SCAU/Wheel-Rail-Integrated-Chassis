@@ -32,6 +32,8 @@
 #include "servo.h"
 #include <stdio.h>
 #include <string.h>
+#include "swerve_chassis.h"
+#include "steer_wheel_kine.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -52,12 +54,11 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
-static uint8_t current = 0;
-static uint8_t last_key_state = 0; // 用于存储上一次按键状态，实现边沿检测
-
 extern reporter Motor_Reporter_Data;
 extern uint8_t query_id;
 extern reporter Motor_Reporter_Cache[4];
+
+SwerveChassis chassis; //注册实例电机
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -112,42 +113,23 @@ int main(void) {
     MX_FDCAN2_Init();
     MX_TIM15_Init();
     /* USER CODE BEGIN 2 */
-    // Motor_Driver_Init();
-    // memset(Motor_Reporter_Cache, 0, sizeof(Motor_Reporter_Cache));
+    //舵轮底盘物理参数
+    Swerve_Chassis_Model_Init(
+        &chassis,
 
-    can_bus_init(&hfdcan2);
-
-    static rs06_t servo;
-    rs06_init(&servo, &hfdcan2, 0x01, RS06_DEFAULT_HOST_ID);
-    // rs06_zeroing_and_save(&servo);
-    rs06_pp_goto(&servo, 6.0f, 2.0f, 10.0f);
-
+        0.40f,     // 前后轴距
+        0.30f,     // 左右轮距
+        0.05f,     // 轮子半径
+        3.0f       // 单轮最大速度
+    );
+    Swerve_Chassis_Init(&chassis);
     /* USER CODE END 2 */
 
     /* Infinite loop */
     /* USER CODE BEGIN WHILE */
     while(1) {
-      // uint8_t key_now = Key_Scan(); 
-      // if (key_now == 1 && last_key_state == 0) 
-      // {
-      //     current = !current; 
-      // }
-      // last_key_state = key_now; 
-      // if(current == 0) 
-      // {
-      //   Motor_Speed_Control_Smooth(0,0x01);
-
-      // }
-      // else 
-      // {
-      //    Motor_Speed_Control_Smooth(100,0x01);
-
-      // }
-
-
-
-
-
+      Swerve_Chassis_Update(&chassis);
+      HAL_Delay(10);
 
       /* USER CODE END WHILE */
 

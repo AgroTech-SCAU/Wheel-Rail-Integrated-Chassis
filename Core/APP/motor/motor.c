@@ -261,7 +261,6 @@ void Motor_Control_All(uint16_t target) {
 uint8_t motor_ids[] = {0x01, 0x02, 0x03, 0x04};
 int motor_count = sizeof(motor_ids) / sizeof(motor_ids[0]);
 
-
     for (uint8_t i = 0; i < motor_count; i++) {
         Motor_Speed_Control_Smooth(target, motor_ids[i]);
     }

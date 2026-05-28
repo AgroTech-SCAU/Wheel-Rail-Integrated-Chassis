@@ -1,5 +1,5 @@
 version: "4.1"
-name: wheel_rail
+name: mov_motor_code
 type: ARM
 deviceName: null
 packDir: null
@@ -28,7 +28,9 @@ targets:
         - Drivers/STM32H7xx_HAL_Driver/Inc/Legacy
         - Drivers/CMSIS/Device/ST/STM32H7xx/Include
         - Drivers/CMSIS/Include
-        - Core/motor
+        - Core/API
+        - Core/APP
+        - Core/APP/motor
       libList: []
     excludeList: []
     settings: {}
