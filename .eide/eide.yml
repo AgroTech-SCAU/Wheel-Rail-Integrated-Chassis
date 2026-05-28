@@ -31,6 +31,8 @@ targets:
         - Core/API
         - Core/APP
         - Core/APP/motor
+        - Core/APP/infra
+        - Core/APP/FS-IA10B
       libList: []
     excludeList: []
     settings: {}

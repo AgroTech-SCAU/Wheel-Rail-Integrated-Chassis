@@ -34,6 +34,8 @@
 #include <string.h>
 #include "swerve_chassis.h"
 #include "steer_wheel_kine.h"
+#include "remote_chassis.h"
+#include "FS-IA10B.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -113,6 +115,7 @@ int main(void) {
     MX_FDCAN2_Init();
     MX_TIM15_Init();
     /* USER CODE BEGIN 2 */
+    
     //舵轮底盘物理参数
     Swerve_Chassis_Model_Init(
         &chassis,
@@ -123,14 +126,25 @@ int main(void) {
         3.0f       // 单轮最大速度
     );
     Swerve_Chassis_Init(&chassis);
+    ibus_init();
     /* USER CODE END 2 */
 
     /* Infinite loop */
     /* USER CODE BEGIN WHILE */
     while(1) {
-      Swerve_Chassis_Update(&chassis);
-      HAL_Delay(10);
+     /* 维持 IBUS 接收 */
 
+    ibus_maintain();
+
+    /* 遥控器控制底盘 */
+
+    Remote_Chassis_Update(&chassis);
+
+    /* 更新底盘 */
+
+    Swerve_Chassis_Update(&chassis);
+
+    HAL_Delay(10);
       /* USER CODE END WHILE */
 
       /* USER CODE BEGIN 3 */
@@ -195,7 +209,21 @@ void SystemClock_Config(void) {
 }
 
 /* USER CODE BEGIN 4 */
+// 在 stm32h7xx_it.c 中
+extern void ibus_rx_complete_callback(UART_HandleTypeDef *huart);
+extern void ibus_error_callback(UART_HandleTypeDef *huart);
 
+void USART5_IRQHandler(void) { // 确认你的 UART5 中断名
+  HAL_UART_IRQHandler(&huart5);
+}
+
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
+  ibus_rx_complete_callback(huart);
+}
+
+void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart) {
+  ibus_error_callback(huart);
+}
 /* USER CODE END 4 */
 
  /* MPU Configuration */
