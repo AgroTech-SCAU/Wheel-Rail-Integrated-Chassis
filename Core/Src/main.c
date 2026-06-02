@@ -246,6 +246,20 @@ void SystemClock_Config(void)
 
 /* USER CODE BEGIN 4 */
 // 在 stm32h7xx_it.c 中
+// extern void ibus_rx_complete_callback(UART_HandleTypeDef *huart);
+// extern void ibus_error_callback(UART_HandleTypeDef *huart);
+
+// void USART5_IRQHandler(void) { // 确认你的 UART5 中断名
+//   HAL_UART_IRQHandler(&huart5);
+// }
+
+// void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
+//   ibus_rx_complete_callback(huart);
+// }
+
+// void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart) {
+//   ibus_error_callback(huart);
+// }
 extern void ibus_rx_complete_callback(UART_HandleTypeDef *huart);
 extern void ibus_error_callback(UART_HandleTypeDef *huart);
 
@@ -254,6 +268,35 @@ void USART5_IRQHandler(void) { // 确认你的 UART5 中断名
 }
 
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
+  /* 蓝牙串口接收状态机逻辑 */
+  if (huart->Instance == UART5) {
+    static uint8_t RxState = 0;
+    static uint8_t pRxPacket = 0;
+
+    if (RxState == 0) {
+      if (aRxBuffer == '[' && BlueSerial_RxFlag == 0) {
+        RxState = 1;
+        pRxPacket = 0;
+      }
+    }
+    else if (RxState == 1) {
+      if (aRxBuffer == ']') {
+        RxState = 0;
+        BlueSerial_RxPacket[pRxPacket] = '\0';
+        BlueSerial_RxFlag = 1;
+      }
+      else {
+        if (pRxPacket < 99) { // 避免缓冲区溢出
+          BlueSerial_RxPacket[pRxPacket] = aRxBuffer;
+          pRxPacket++;
+        }
+      }
+    }
+    // 重新开启单字节接收中断
+    HAL_UART_Receive_IT(&huart5, &aRxBuffer, 1);
+  }
+
+  /* 保持原有的 ibus 回调 */
   ibus_rx_complete_callback(huart);
 }
 

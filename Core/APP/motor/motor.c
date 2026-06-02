@@ -128,8 +128,6 @@ void Motor_Control_All(int16_t target)
 {
     for(uint8_t i = 1; i <= 4; i++)
     {
-        // 【修改点 2】：底层已处理反向，这里直接保持最干净、统一的调用
-        // 避免在此处再次取负数导致“负负得正”的二次反转 Bug
         Motor_Speed_Control_Smooth(target, i);
     }
 }
