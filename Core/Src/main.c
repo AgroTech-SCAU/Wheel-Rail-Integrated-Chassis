@@ -30,12 +30,16 @@
 #include "motor.h"
 #include "can.h"
 #include "servo.h"
+#include "string.h"
 #include <stdio.h>
-#include <string.h>
+#include <stdarg.h>
+#include <stdlib.h>
+#include <math.h>
 #include "swerve_chassis.h"
 #include "steer_wheel_kine.h"
 #include "remote_chassis.h"
 #include "FS-IA10B.h"
+#include "BlueSerial.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -59,7 +63,7 @@
 extern reporter Motor_Reporter_Data;
 extern uint8_t query_id;
 extern reporter Motor_Reporter_Cache[4];
-
+uint8_t aRxBuffer;                // HAL 接收中断使用的单字节缓存
 SwerveChassis chassis; //注册实例电机
 /* USER CODE END PV */
 
@@ -128,21 +132,44 @@ int main(void)
     );
     Swerve_Chassis_Init(&chassis);
     ibus_init();
+     HAL_UART_Receive_IT(&huart5, &aRxBuffer, 1); 
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-   
   while(1) {
      /* 维持 IBUS 接收 */
     // ibus_maintain();
-        Swerve_Chassis_Set_Velocity(
-        &chassis,
+if (BlueSerial_RxFlag == 1)
+    {
+      BlueSerial_Printf("Received: %s\r\n", BlueSerial_RxPacket);
+      char *Tag = strtok(BlueSerial_RxPacket, ",");
+      if (Tag != NULL)
+      {
+        if (strcmp(Tag, "key") == 0)
+        {
+          char *Name = strtok(NULL, ",");
+          char *Action = strtok(NULL, ",");
+        }
+        else if (strcmp(Tag, "joystick") == 0)
+        {
+          int8_t LH = (int8_t)atoi(strtok(NULL, ","));
+          int8_t LV = (int8_t)atoi(strtok(NULL, ","));
+          int8_t RH = (int8_t)atoi(strtok(NULL, ","));
+    
+          /* 计算控制输出量 */
+          // 假设摇杆输入范围为 -100 到 100
+          // 这里的正负号可根据实际手柄操控方向进行调整
+          float target_vx = ((float)LV / 100.0f) * chassis.model.max_wheel_linear_speed; 
+          float target_vy = ((float)LH / 100.0f) * chassis.model.max_wheel_linear_speed;
+          float target_wz = ((float)RH / 100.0f) * 1.5f; // 限制最大旋转角速度为 1.5 rad/s
 
-        0.0f,    // vx
-        0.0f,    // vy
-        0.0f     // wz
-    );
+          /* 设定底盘目标速度 */
+          Swerve_Chassis_Set_Velocity(&chassis, target_vx, target_vy, target_wz);
+        }
+      }
+      BlueSerial_RxFlag = 0;
+    }
     Swerve_Chassis_Update(&chassis);
     HAL_Delay(10);
     // /* 遥控器控制底盘 */
