@@ -10,8 +10,8 @@ char BlueSerial_RxPacket[100];
 uint8_t BlueSerial_RxFlag;
 
 void BlueSerial_SendByte(uint8_t Byte){
-    HAL_UART_Transmit(&huart5, &Byte, 1, HAL_MAX_DELAY);
-    while(__HAL_UART_GET_FLAG(&huart5, UART_FLAG_TXE) == RESET);
+    HAL_UART_Transmit(&huart1, &Byte, 1, HAL_MAX_DELAY);
+    while(__HAL_UART_GET_FLAG(&huart1, UART_FLAG_TXE) == RESET);
 }
 
 void BlueSerial_SendArray(uint8_t *Array, uint16_t Length)

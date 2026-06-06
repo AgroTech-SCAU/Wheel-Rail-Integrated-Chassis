@@ -122,6 +122,7 @@ int main(void)
   /* USER CODE BEGIN 2 */
     // Motor_Driver_Init();
     //舵轮底盘物理参数
+    HAL_GPIO_WritePin(GPIOC,GPIO_PIN_15, GPIO_PIN_SET);
     Swerve_Chassis_Model_Init(
         &chassis,
 
@@ -133,14 +134,16 @@ int main(void)
     Swerve_Chassis_Init(&chassis);
     ibus_init();
      HAL_UART_Receive_IT(&huart5, &aRxBuffer, 1); 
+        BlueSerial_Printf("Swerve Chassis Initialized\r\n");
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while(1) {
+ 
      /* 维持 IBUS 接收 */
     // ibus_maintain();
-if (BlueSerial_RxFlag == 1)
+   if (BlueSerial_RxFlag == 1)
     {
       BlueSerial_Printf("Received: %s\r\n", BlueSerial_RxPacket);
       char *Tag = strtok(BlueSerial_RxPacket, ",");
