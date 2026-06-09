@@ -39,7 +39,7 @@
 #include "steer_wheel_kine.h"
 #include "remote_chassis.h"
 #include "FS-IA10B.h"
-#include "BlueSerial.h"
+// #include "BlueSerial.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -63,7 +63,6 @@
 extern reporter Motor_Reporter_Data;
 extern uint8_t query_id;
 extern reporter Motor_Reporter_Cache[4];
-uint8_t aRxBuffer;                // HAL 接收中断使用的单字节缓存
 SwerveChassis chassis; //注册实例电机
 /* USER CODE END PV */
 
@@ -120,7 +119,6 @@ int main(void)
   MX_FDCAN2_Init();
   MX_TIM15_Init();
   /* USER CODE BEGIN 2 */
-    // Motor_Driver_Init();
     //舵轮底盘物理参数
     HAL_GPIO_WritePin(GPIOC,GPIO_PIN_15, GPIO_PIN_SET);
     Swerve_Chassis_Model_Init(
@@ -131,49 +129,24 @@ int main(void)
         0.0215f,    // 轮子半径 m
         0.45f       // 单轮最大线速度
     );
-    Swerve_Chassis_Init(&chassis);
-    ibus_init();
-     HAL_UART_Receive_IT(&huart5, &aRxBuffer, 1); 
-        BlueSerial_Printf("Swerve Chassis Initialized\r\n");
+/* 初始化舵轮底盘 */
+Swerve_Chassis_Init(&chassis);
+
+/* FS-IA10B 初始化，内部已经开启 UART5 RX 中断 */
+ibus_init();
+
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while(1) {
- 
      /* 维持 IBUS 接收 */
-    // ibus_maintain();
-   if (BlueSerial_RxFlag == 1)
-    {
-      BlueSerial_Printf("Received: %s\r\n", BlueSerial_RxPacket);
-      char *Tag = strtok(BlueSerial_RxPacket, ",");
-      if (Tag != NULL)
-      {
-        if (strcmp(Tag, "key") == 0)
-        {
-          char *Name = strtok(NULL, ",");
-          char *Action = strtok(NULL, ",");
-        }
-        else if (strcmp(Tag, "joystick") == 0)
-        {
-          int8_t LH = (int8_t)atoi(strtok(NULL, ","));
-          int8_t LV = (int8_t)atoi(strtok(NULL, ","));
-          int8_t RH = (int8_t)atoi(strtok(NULL, ","));
-    
-          /* 计算控制输出量 */
-          // 假设摇杆输入范围为 -100 到 100
-          // 这里的正负号可根据实际手柄操控方向进行调整
-          float target_vx = ((float)LV / 100.0f) * chassis.model.max_wheel_linear_speed; 
-          float target_vy = ((float)LH / 100.0f) * chassis.model.max_wheel_linear_speed;
-          float target_wz = ((float)RH / 100.0f) * 1.5f; // 限制最大旋转角速度为 1.5 rad/s
-
-          /* 设定底盘目标速度 */
-          Swerve_Chassis_Set_Velocity(&chassis, target_vx, target_vy, target_wz);
-        }
-      }
-      BlueSerial_RxFlag = 0;
-    }
+    Remote_Chassis_Update(&chassis);
+    /*
+     * 调用你的舵轮底盘解算和电机输出
+     */
     Swerve_Chassis_Update(&chassis);
+
     HAL_Delay(10);
     // /* 遥控器控制底盘 */
 
@@ -248,63 +221,14 @@ void SystemClock_Config(void)
 }
 
 /* USER CODE BEGIN 4 */
-// 在 stm32h7xx_it.c 中
-// extern void ibus_rx_complete_callback(UART_HandleTypeDef *huart);
-// extern void ibus_error_callback(UART_HandleTypeDef *huart);
-
-// void USART5_IRQHandler(void) { // 确认你的 UART5 中断名
-//   HAL_UART_IRQHandler(&huart5);
-// }
-
-// void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
-//   ibus_rx_complete_callback(huart);
-// }
-
-// void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart) {
-//   ibus_error_callback(huart);
-// }
-extern void ibus_rx_complete_callback(UART_HandleTypeDef *huart);
-extern void ibus_error_callback(UART_HandleTypeDef *huart);
-
-void USART5_IRQHandler(void) { // 确认你的 UART5 中断名
-  HAL_UART_IRQHandler(&huart5);
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+{
+    ibus_rx_complete_callback(huart);
 }
 
-void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
-  /* 蓝牙串口接收状态机逻辑 */
-  if (huart->Instance == UART5) {
-    static uint8_t RxState = 0;
-    static uint8_t pRxPacket = 0;
-
-    if (RxState == 0) {
-      if (aRxBuffer == '[' && BlueSerial_RxFlag == 0) {
-        RxState = 1;
-        pRxPacket = 0;
-      }
-    }
-    else if (RxState == 1) {
-      if (aRxBuffer == ']') {
-        RxState = 0;
-        BlueSerial_RxPacket[pRxPacket] = '\0';
-        BlueSerial_RxFlag = 1;
-      }
-      else {
-        if (pRxPacket < 99) { // 避免缓冲区溢出
-          BlueSerial_RxPacket[pRxPacket] = aRxBuffer;
-          pRxPacket++;
-        }
-      }
-    }
-    // 重新开启单字节接收中断
-    HAL_UART_Receive_IT(&huart5, &aRxBuffer, 1);
-  }
-
-  /* 保持原有的 ibus 回调 */
-  ibus_rx_complete_callback(huart);
-}
-
-void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart) {
-  ibus_error_callback(huart);
+void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
+{
+    ibus_error_callback(huart);
 }
 /* USER CODE END 4 */
 
