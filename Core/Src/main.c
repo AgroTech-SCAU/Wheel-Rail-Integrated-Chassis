@@ -40,6 +40,7 @@
 #include "remote_chassis.h"
 #include "FS-IA10B.h"
 // #include "BlueSerial.h"
+#include "log.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -75,6 +76,95 @@ static void MPU_Config(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+
+/* ================================================================
+ * 日志输出端口：USART1 阻塞发送
+ * ================================================================ */
+static bool board_log_write(const char* data, uint32_t len)
+{
+    return HAL_UART_Transmit(&huart1, (uint8_t*)data, (uint16_t)len, HAL_MAX_DELAY) == HAL_OK;
+}
+
+static const LogPortOps log_ops = {
+    .write = board_log_write,
+};
+
+/* ================================================================
+ * 初始化自检打印（仅在启动时调用一次）
+ *
+ * 打印内容包括：
+ *   - 系统主控与时钟
+ *   - CAN 总线配置与使能状态
+ *   - 4 路驱动电机 (ID 1~4) 配置详情
+ *   - 4 路舵向电机 (ID 5~8) 使能与模式详情
+ *   - 底盘物理参数
+ *   - 遥控器接收机与调试串口
+ * ================================================================ */
+static void Log_Init_SelfCheck(const SwerveChassis* chassis)
+{
+    log_info("============================================");
+    log_info("  轮轨复合底盘 - 上电初始化自检报告");
+    log_info("============================================");
+
+    /* ---------- 1. 系统主控 ---------- */
+    log_info("[系统] MCU 型号: STM32H723VGT6 (Cortex-M7, LQFP100)");
+    log_info("[系统] 主频: 200 MHz (HSI 64MHz /4*12/1 = 192MHz→PLL→200MHz)");
+    log_info("[系统] 内核供电: LDO, VOS 电压缩放等级 1");
+    log_info("[系统] MPU: 已配置 (Region0, 4GB 背景区域)");
+
+    /* ---------- 2. CAN 总线 ---------- */
+    log_info("[CAN] FDCAN1 (驱动电机总线): 500 kbit/s");
+    log_info("[CAN]   引脚: PD0=FDCAN1_TX, PD1=FDCAN1_RX");
+    log_info("[CAN] FDCAN2 (舵向电机总线): 1 Mbit/s");
+    log_info("[CAN]   引脚: PB5=FDCAN2_TX, PB6=FDCAN2_RX");
+    log_info("[CAN] CAN1_EN (PC13): 已拉高, CAN1 收发器使能");
+    log_info("[CAN] CAN2_EN (PC14): 已拉高, CAN2 收发器使能");
+    log_info("[CAN] 全局滤波器: 双 FIFO0 全部接收, 拒绝远程帧");
+
+    /* ---------- 3. 驱动电机 (ID 1~4) ---------- */
+    log_info("[驱动] 数量: 4 台, 总线 FDCAN1, 通信帧 ID=0x032 (标准帧)");
+    log_info("[驱动] ID=1 (FL 前左): 方向正向, 平滑斜坡 5.0 RPM/step");
+    log_info("[驱动] ID=2 (FR 前右): 方向正向, 平滑斜坡 5.0 RPM/step");
+    log_info("[驱动] ID=3 (RR 后右): 方向反向 (硬件取反), 平滑斜坡 5.0 RPM/step");
+    log_info("[驱动] ID=4 (RL 后左): 方向反向 (硬件取反), 平滑斜坡 5.0 RPM/step");
+    log_info("[驱动] 转速限幅: %d ~ %d RPM", SPEED_RPM_MIN, SPEED_RPM_MAX);
+    log_info("[驱动] 急停接口: Motor_Stop_Immediately() 清零目标+当前转速");
+    log_info("[驱动] 查询帧: ID=0x107, 轮询读取反馈 (速度/位置/错误码)");
+    log_info("[驱动] TIM6 定时器: 已启动, 用于 4 路平滑斜坡周期更新");
+
+    /* ---------- 4. 舵向电机 (ID 5~8, RS06 协议) ---------- */
+    log_info("[舵向] 数量: 4 台, 总线 FDCAN2, 通信帧=29位扩展帧 (RS06 协议)");
+    log_info("[舵向] 主机 ID: 0x%02X, 角度限幅: %.2f ~ %.2f rad", RS06_HOST_ID, (double)RS06_P_MIN, (double)RS06_P_MAX);
+    log_info("[舵向] ID=5 (FL 前左): PP 位置模式, 已发送使能帧 (0x0300), 初始目标=0.0 rad");
+    log_info("[舵向] ID=6 (FR 前右): PP 位置模式, 已发送使能帧 (0x0300), 初始目标=0.0 rad");
+    log_info("[舵向] ID=7 (RR 后右): PP 位置模式, 已发送使能帧 (0x0300), 初始目标=0.0 rad");
+    log_info("[舵向] ID=8 (RL 后左): PP 位置模式, 已发送使能帧 (0x0300), 初始目标=0.0 rad");
+    log_info("[舵向] 方向: ID=5/7 在 wz 旋转时额外 +90° 偏移并取反 wz");
+    log_info("[舵向] 归零与保存: RS06_Zeroing_And_Save_Process() 可用");
+
+    /* ---------- 5. 底盘物理参数 ---------- */
+    log_info("[底盘] 前后轴距 (length): %.3f m", (double)chassis->model.length);
+    log_info("[底盘] 左右轮距 (width):  %.3f m", (double)chassis->model.width);
+    log_info("[底盘] 轮子半径 (radius): %.4f m", (double)chassis->model.wheel_radius);
+    log_info("[底盘] 单轮最大线速度:    %.2f m/s", (double)chassis->model.max_wheel_linear_speed);
+    log_info("[底盘] 解算方式: 四轮独立逆运动学 (IK) → wheel_omega + steer_angle");
+
+    /* ---------- 6. 遥控器接收机 ---------- */
+    log_info("[遥控] 接收机型号: FS-iA10B (iBUS 协议)");
+    log_info("[遥控] 接口: UART5 (PB13=RX, DMA1_Stream1 循环接收), 115200-8-N-1");
+    log_info("[遥控] 通道数: 14 ch, 安全使能阈值 VRB > %u", REMOTE_VRB_ENABLE_THRESHOLD);
+    log_info("[遥控] RC 离线保护: 仅发送零速, 不断电机使能");
+
+    /* ---------- 7. 调试与状态输出 ---------- */
+    log_info("[调试] 日志输出: USART1 (PA9=TX), 9600-8-N-1");
+    log_info("[调试] 日志级别: INFO (ERROR+WARN+INFO 均输出)");
+    log_info("[调试] ANSI 彩色: 启用 (错误红/警告黄/信息蓝)");
+    log_info("[调试] USART1 蓝牙串口 (BlueSerial): 当前已禁用");
+
+    log_info("============================================");
+    log_info("  自检通过, 所有电机已使能, 进入主循环");
+    log_info("============================================");
+}
 
 /* USER CODE END 0 */
 
@@ -134,6 +224,20 @@ Swerve_Chassis_Init(&chassis);
 
 /* FS-IA10B 初始化，内部已经开启 UART5 RX 中断 */
 ibus_init();
+
+/* 初始化日志模块（USART1 输出） */
+{
+    LogConfig log_config = {
+        .ops = &log_ops,
+        .level = LOG_LEVEL_INFO,
+        .enable_color = true,
+        .async_write = false,
+    };
+    log_init(&log_config);
+}
+
+/* 上电初始化自检：打印所有电机使能状态和系统配置（仅此一次） */
+Log_Init_SelfCheck(&chassis);
 
   /* USER CODE END 2 */
 
