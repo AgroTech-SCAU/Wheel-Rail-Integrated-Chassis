@@ -63,7 +63,7 @@
 /* USER CODE BEGIN PV */
 extern reporter Motor_Reporter_Data;
 extern uint8_t query_id;
-extern reporter Motor_Reporter_Cache[4];
+extern reporter Motor_Reporter_Cache[MOTOR_DRIVE_COUNT];
 SwerveChassis chassis; //注册实例电机
 /* USER CODE END PV */
 
@@ -89,21 +89,57 @@ static const LogPortOps log_ops = {
     .write = board_log_write,
 };
 
+#define CHASSIS_COMMAND_LOG_PERIOD_MS 500U
+
+/*
+ * 周期打印遥控器最终写入底盘的速度指令。
+ * 使用千分量整数避免 newlib-nano 未启用浮点 printf 时无法显示 %f。
+ */
+static void Log_Chassis_Command(const SwerveChassis* chassis)
+{
+    static uint32_t last_log_tick = 0U;
+    uint32_t now_tick;
+    int32_t vx_x1000;
+    int32_t vy_x1000;
+    int32_t wz_x1000;
+
+    if(chassis == NULL)
+    {
+        return;
+    }
+
+    now_tick = HAL_GetTick();
+    if((uint32_t)(now_tick - last_log_tick) < CHASSIS_COMMAND_LOG_PERIOD_MS)
+    {
+        return;
+    }
+    last_log_tick = now_tick;
+
+    vx_x1000 = (int32_t)(chassis->kine.control.vx * 1000.0f);
+    vy_x1000 = (int32_t)(chassis->kine.control.vy * 1000.0f);
+    wz_x1000 = (int32_t)(chassis->kine.control.wz * 1000.0f);
+
+    log_info("[遥控指令 x1000] vx=%ld vy=%ld wz=%ld",
+             (long)vx_x1000,
+             (long)vy_x1000,
+             (long)wz_x1000);
+}
+
 /* ================================================================
- * 初始化自检打印（仅在启动时调用一次）
+ * 初始化配置打印（仅在启动时调用一次）
  *
  * 打印内容包括：
  *   - 系统主控与时钟
  *   - CAN 总线配置与使能状态
  *   - 4 路驱动电机 (ID 1~4) 配置详情
- *   - 4 路舵向电机 (ID 5~8) 使能与模式详情
+ *   - 4 路舵向电机 (ID 5~8) 配置详情
  *   - 底盘物理参数
  *   - 遥控器接收机与调试串口
  * ================================================================ */
-static void Log_Init_SelfCheck(const SwerveChassis* chassis)
+static void Log_Init_ConfigReport(const SwerveChassis* chassis)
 {
     log_info("============================================");
-    log_info("  轮轨复合底盘 - 上电初始化自检报告");
+    log_info("  轮轨复合底盘 - 上电初始化配置报告");
     log_info("============================================");
 
     /* ---------- 1. 系统主控 ---------- */
@@ -114,31 +150,25 @@ static void Log_Init_SelfCheck(const SwerveChassis* chassis)
 
     /* ---------- 2. CAN 总线 ---------- */
     log_info("[CAN] FDCAN1 (驱动电机总线): 500 kbit/s");
-    log_info("[CAN]   引脚: PD0=FDCAN1_TX, PD1=FDCAN1_RX");
+    log_info("[CAN]   引脚: PD0=FDCAN1_RX, PD1=FDCAN1_TX");
     log_info("[CAN] FDCAN2 (舵向电机总线): 1 Mbit/s");
-    log_info("[CAN]   引脚: PB5=FDCAN2_TX, PB6=FDCAN2_RX");
-    log_info("[CAN] CAN1_EN (PC13): 已拉高, CAN1 收发器使能");
-    log_info("[CAN] CAN2_EN (PC14): 已拉高, CAN2 收发器使能");
+    log_info("[CAN]   引脚: PB5=FDCAN2_RX, PB6=FDCAN2_TX");
+    log_info("[CAN] CAN1_EN (PC13): GPIO 输出高电平");
+    log_info("[CAN] CAN2_EN (PC14): GPIO 输出高电平");
     log_info("[CAN] 全局滤波器: 双 FIFO0 全部接收, 拒绝远程帧");
 
     /* ---------- 3. 驱动电机 (ID 1~4) ---------- */
     log_info("[驱动] 数量: 4 台, 总线 FDCAN1, 通信帧 ID=0x032 (标准帧)");
     log_info("[驱动] ID=1 (FL 前左): 方向正向, 平滑斜坡 5.0 RPM/step");
     log_info("[驱动] ID=2 (FR 前右): 方向正向, 平滑斜坡 5.0 RPM/step");
-    log_info("[驱动] ID=3 (RR 后右): 方向反向 (硬件取反), 平滑斜坡 5.0 RPM/step");
-    log_info("[驱动] ID=4 (RL 后左): 方向反向 (硬件取反), 平滑斜坡 5.0 RPM/step");
-    log_info("[驱动] 转速限幅: %d ~ %d RPM", SPEED_RPM_MIN, SPEED_RPM_MAX);
+    log_info("[驱动] ID=3 (RR 后右): 方向反向 (软件取反), 平滑斜坡 5.0 RPM/step");
+    log_info("[驱动] ID=4 (RL 后左): 方向反向 (软件取反), 平滑斜坡 5.0 RPM/step");
     log_info("[驱动] 急停接口: Motor_Stop_Immediately() 清零目标+当前转速");
-    log_info("[驱动] 查询帧: ID=0x107, 轮询读取反馈 (速度/位置/错误码)");
-    log_info("[驱动] TIM6 定时器: 已启动, 用于 4 路平滑斜坡周期更新");
 
     /* ---------- 4. 舵向电机 (ID 5~8, RS06 协议) ---------- */
     log_info("[舵向] 数量: 4 台, 总线 FDCAN2, 通信帧=29位扩展帧 (RS06 协议)");
     log_info("[舵向] 主机 ID: 0x%02X, 角度限幅: %.2f ~ %.2f rad", RS06_HOST_ID, (double)RS06_P_MIN, (double)RS06_P_MAX);
-    log_info("[舵向] ID=5 (FL 前左): PP 位置模式, 已发送使能帧 (0x0300), 初始目标=0.0 rad");
-    log_info("[舵向] ID=6 (FR 前右): PP 位置模式, 已发送使能帧 (0x0300), 初始目标=0.0 rad");
-    log_info("[舵向] ID=7 (RR 后右): PP 位置模式, 已发送使能帧 (0x0300), 初始目标=0.0 rad");
-    log_info("[舵向] ID=8 (RL 后左): PP 位置模式, 已发送使能帧 (0x0300), 初始目标=0.0 rad");
+    log_info("[舵向] ID=5 (FL 前左), ID=6 (FR 前右), ID=7 (RR 后右), ID=8 (RL 后左)");
     log_info("[舵向] 方向: ID=5/7 在 wz 旋转时额外 +90° 偏移并取反 wz");
     log_info("[舵向] 归零与保存: RS06_Zeroing_And_Save_Process() 可用");
 
@@ -151,8 +181,8 @@ static void Log_Init_SelfCheck(const SwerveChassis* chassis)
 
     /* ---------- 6. 遥控器接收机 ---------- */
     log_info("[遥控] 接收机型号: FS-iA10B (iBUS 协议)");
-    log_info("[遥控] 接口: UART5 (PB13=RX, DMA1_Stream1 循环接收), 115200-8-N-1");
-    log_info("[遥控] 通道数: 14 ch, 安全使能阈值 VRB > %u", REMOTE_VRB_ENABLE_THRESHOLD);
+    log_info("[遥控] 接口: UART5 (PD2=RX, PB13=TX, 单字节中断接收), 115200-8-N-1");
+    log_info("[遥控] 通道数: 14 ch, 速度使能条件 VRB <= %u", REMOTE_VRB_ENABLE_THRESHOLD);
     log_info("[遥控] RC 离线保护: 仅发送零速, 不断电机使能");
 
     /* ---------- 7. 调试与状态输出 ---------- */
@@ -162,7 +192,7 @@ static void Log_Init_SelfCheck(const SwerveChassis* chassis)
     log_info("[调试] USART1 蓝牙串口 (BlueSerial): 当前已禁用");
 
     log_info("============================================");
-    log_info("  自检通过, 所有电机已使能, 进入主循环");
+    log_info("  初始化配置打印完成, 进入主循环");
     log_info("============================================");
 }
 
@@ -219,6 +249,8 @@ int main(void)
         0.0215f,    // 轮子半径 m
         0.45f       // 单轮最大线速度
     );
+/* 初始化本末驱动电机、FDCAN1，并启动 TIM6 10 ms 平滑控制中断 */
+Motor_Driver_Init();
 /* 初始化舵轮底盘 */
 Swerve_Chassis_Init(&chassis);
 
@@ -235,9 +267,9 @@ ibus_init();
     };
     log_init(&log_config);
 }
-
-/* 上电初始化自检：打印所有电机使能状态和系统配置（仅此一次） */
-Log_Init_SelfCheck(&chassis);
+// Motor_Speed_Control_Smooth(50,1);
+/* 上电初始化配置报告：只打印代码中可以确定的静态配置（仅此一次） */
+Log_Init_ConfigReport(&chassis);
 
   /* USER CODE END 2 */
 
@@ -246,18 +278,15 @@ Log_Init_SelfCheck(&chassis);
   while(1) {
      /* 维持 IBUS 接收 */
     Remote_Chassis_Update(&chassis);
+
+    /* 周期打印遥控器最终写入的 vx、vy、wz，不参与控制计算 */
+    Log_Chassis_Command(&chassis);
     /*
      * 调用你的舵轮底盘解算和电机输出
      */
     Swerve_Chassis_Update(&chassis);
 
     HAL_Delay(10);
-    // /* 遥控器控制底盘 */
-
-    // Remote_Chassis_Update(&chassis);
-
-    // /* 更新底盘 */
-    // Swerve_Chassis_Update(&chassis);
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */

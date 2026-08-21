@@ -1,4 +1,4 @@
-#ifndef __SERVO_H___
+#ifndef __SERVO_H__
 #define __SERVO_H__
 
 #include "main.h"
@@ -52,4 +52,4 @@ void RS06_Set_Mechanical_Zero(FDCAN_HandleTypeDef* hfdcan, uint8_t motor_id);
 void RS06_Save_Config(FDCAN_HandleTypeDef* hfdcan, uint8_t motor_id);
 void RS06_Zeroing_And_Save_Process(FDCAN_HandleTypeDef* hfdcan, uint8_t motor_id);
 
-#endif /* __RS06_H__ */
+#endif /* __SERVO_H__ */

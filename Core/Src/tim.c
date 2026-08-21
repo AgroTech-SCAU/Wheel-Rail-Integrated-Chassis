@@ -95,7 +95,12 @@ void MX_TIM6_Init(void)
 
   /* USER CODE END TIM6_Init 1 */
   htim6.Instance = TIM6;
-  htim6.Init.Prescaler = 9999;
+  /*
+   * TIM6 kernel clock is 200 MHz:
+   * HCLK=200 MHz, APB1=/2 and TIMPRE=0 => timer clock=2*PCLK1=200 MHz.
+   * 200 MHz / (19999+1) / (99+1) = 100 Hz => 10 ms update period.
+   */
+  htim6.Init.Prescaler = 19999;
   htim6.Init.CounterMode = TIM_COUNTERMODE_UP;
   htim6.Init.Period = 99;
   htim6.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;

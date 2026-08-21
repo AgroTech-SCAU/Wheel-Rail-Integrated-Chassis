@@ -28,9 +28,9 @@ targets:
         - Drivers/STM32H7xx_HAL_Driver/Inc/Legacy
         - Drivers/CMSIS/Device/ST/STM32H7xx/Include
         - Drivers/CMSIS/Include
+        - Core/APP/infra
         - Core/APP/BlueTooth
         - Core/APP/FS-IA10B
-        - Core/APP/infra
         - Core/APP/motor
         - Core/API
       libList: []
@@ -158,6 +158,6 @@ targets:
       OpenOCD:
         baseAddr: "0x08000000"
         bin: ""
-        interface: stlink
+        interface: cmsis-dap
         target: stm32h7x
     uploader: OpenOCD

@@ -6,78 +6,114 @@
 #include "tim.h"
 
 extern FDCAN_HandleTypeDef hfdcan1;
-extern FDCAN_HandleTypeDef hfdcan2;
 extern TIM_HandleTypeDef htim6;
 
 extern reporter Motor_Reporter_Data;
 
 uint8_t RxData[8];
 
-static uint8_t Motor_TxData_0x32[8] = {0};
-static uint8_t Motor_TxData_0x33[8] = {0};
+static uint8_t Motor_TxData_0x32[MOTOR_CAN_DATA_LENGTH] = {0};
 
-reporter Motor_Reporter_Cache[4];
+reporter Motor_Reporter_Cache[MOTOR_DRIVE_COUNT];
 
-uint8_t query_id = 1;
+uint8_t query_id = MOTOR_ID_1;
+static volatile uint8_t Motor_Last_Query_ID = MOTOR_ID_1;
 
 typedef struct {
-    int16_t target_rpm;
-    float current_rpm;
-    float accel_step;
+    volatile int16_t target_rpm;
+    volatile int16_t current_rpm;
+    int16_t accel_step_rpm;
 } Motor_Smooth_Ctrl_t;
 
-static Motor_Smooth_Ctrl_t MotorStates[4];
+static Motor_Smooth_Ctrl_t MotorStates[MOTOR_DRIVE_COUNT];
+static uint8_t Motor_Driver_Initialized = 0U;
+static volatile uint32_t Motor_Smooth_Tick_Count = 0U;
+static volatile uint32_t Motor_Smooth_Tx_Error_Count = 0U;
+
+static uint8_t Motor_ID_Is_Valid(uint8_t motor_id)
+{
+    return (motor_id >= MOTOR_ID_MIN && motor_id <= MOTOR_ID_MAX) ? 1U : 0U;
+}
+
+static int16_t Motor_Limit_RPM(int16_t InputRPM)
+{
+    if(InputRPM > SPEED_RPM_MAX)
+    {
+        return SPEED_RPM_MAX;
+    }
+
+    if(InputRPM < SPEED_RPM_MIN)
+    {
+        return SPEED_RPM_MIN;
+    }
+
+    return InputRPM;
+}
+
+static uint32_t Motor_Enter_Critical(void)
+{
+    uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+    return primask;
+}
+
+static void Motor_Exit_Critical(uint32_t primask)
+{
+    if(primask == 0U)
+    {
+        __enable_irq();
+    }
+}
 
 /* 初始化 */
 void Motor_Driver_Init(void)
 {
+    if(Motor_Driver_Initialized != 0U)
+    {
+        return;
+    }
+
     HAL_GPIO_WritePin(CAN1_EN_GPIO_Port, CAN1_EN_Pin, GPIO_PIN_SET);
-    HAL_GPIO_WritePin(CAN2_EN_GPIO_Port, CAN2_EN_Pin, GPIO_PIN_SET);
 
-    if(HAL_FDCAN_ConfigGlobalFilter(&hfdcan1,
-                                    FDCAN_ACCEPT_IN_RX_FIFO0,
-                                    FDCAN_ACCEPT_IN_RX_FIFO0,
-                                    FDCAN_REJECT_REMOTE,
-                                    FDCAN_REJECT_REMOTE) != HAL_OK)
+    if(can_bus_init(&hfdcan1) != CAN_BUS_OK)
     {
         Error_Handler();
     }
 
-    HAL_FDCAN_Start(&hfdcan1);
-    HAL_FDCAN_ActivateNotification(&hfdcan1, FDCAN_IT_RX_FIFO0_NEW_MESSAGE, 0);
-
-    if(HAL_FDCAN_ConfigGlobalFilter(&hfdcan2,
-                                    FDCAN_ACCEPT_IN_RX_FIFO0,
-                                    FDCAN_ACCEPT_IN_RX_FIFO0,
-                                    FDCAN_REJECT_REMOTE,
-                                    FDCAN_REJECT_REMOTE) != HAL_OK)
-    {
-        Error_Handler();
-    }
-
-    HAL_FDCAN_Start(&hfdcan2);
-    HAL_FDCAN_ActivateNotification(&hfdcan2, FDCAN_IT_RX_FIFO0_NEW_MESSAGE, 0);
-
-    for(int i = 0; i < 4; i++)
+    for(uint8_t i = 0U; i < MOTOR_DRIVE_COUNT; i++)
     {
         MotorStates[i].target_rpm = 0;
-        MotorStates[i].current_rpm = 0.0f;
-        MotorStates[i].accel_step = 5.0f;
+        MotorStates[i].current_rpm = 0;
+        MotorStates[i].accel_step_rpm = MOTOR_SMOOTH_STEP_RPM;
     }
 
-    HAL_TIM_Base_Start_IT(&htim6);
+    memset(Motor_TxData_0x32, 0, sizeof(Motor_TxData_0x32));
+    Motor_Smooth_Tick_Count = 0U;
+    Motor_Smooth_Tx_Error_Count = 0U;
+
+    /* 先置初始化标志，防止定时器启动后第一拍与初始化过程竞争。 */
+    Motor_Driver_Initialized = 1U;
+    __HAL_TIM_SET_COUNTER(&htim6, 0U);
+    __HAL_TIM_CLEAR_FLAG(&htim6, TIM_FLAG_UPDATE);
+
+    if(HAL_TIM_Base_Start_IT(&htim6) != HAL_OK)
+    {
+        Motor_Driver_Initialized = 0U;
+        Error_Handler();
+    }
 }
 
 /* 底层发送 */
 static void Motor_Drive(int16_t InputRPM, uint8_t ID)
 {
-    // 【修改点 1】：在底层统一处理 ID 3 和 4 的反向逻辑，确保所有控制接口表现一致
-    if (ID == 3 || ID == 4)
+    /* ID 3、4 对应反向安装的驱动轮，方向统一在最底层处理。 */
+    if(ID == MOTOR_ID_3 || ID == MOTOR_ID_4)
     {
         InputRPM = -InputRPM;
     }
 
-    int32_t target_val = (int32_t)InputRPM * 100; // 与手册协议中 2000 对应 07 D0 完全一致，这里不需要修改
+    /* CAN 原始值单位为 0.01 RPM，例如 20 RPM -> 2000 -> 0x07D0。 */
+    int32_t target_val = (int32_t)InputRPM * 100;
 
     if(target_val > 32767)
         target_val = 32767;
@@ -87,9 +123,9 @@ static void Motor_Drive(int16_t InputRPM, uint8_t ID)
 
     int16_t ScaledSpeed = (int16_t)target_val;
 
-    if(ID >= 1 && ID <= 4)
+    if(Motor_ID_Is_Valid(ID) != 0U)
     {
-        uint8_t idx = (ID - 1) * 2;
+        uint8_t idx = (uint8_t)((ID - MOTOR_ID_MIN) * 2U);
         Motor_TxData_0x32[idx]     = (uint8_t)(ScaledSpeed >> 8);
         Motor_TxData_0x32[idx + 1] = (uint8_t)(ScaledSpeed & 0xFF);
     }
@@ -98,35 +134,65 @@ static void Motor_Drive(int16_t InputRPM, uint8_t ID)
 /* 普通控制 */
 void Motor_Speed_Control(int16_t InputRPM, uint8_t ID)
 {
-    if(InputRPM > SPEED_RPM_MAX)
-        InputRPM = SPEED_RPM_MAX;
+    uint32_t primask;
+    can_bus_status_t status;
 
-    if(InputRPM < SPEED_RPM_MIN)
-        InputRPM = SPEED_RPM_MIN;
+    if(Motor_ID_Is_Valid(ID) == 0U)
+    {
+        return;
+    }
+
+    if(Motor_Driver_Initialized == 0U)
+    {
+        Motor_Driver_Init();
+    }
+
+    InputRPM = Motor_Limit_RPM(InputRPM);
+
+    /*
+     * 普通控制是立即跳变，但必须同步斜坡状态；否则下一次 TIM6
+     * 中断会把旧的 current_rpm 再次发出，形成非零/旧值交替的顿挫。
+     */
+    primask = Motor_Enter_Critical();
+    MotorStates[ID - MOTOR_ID_MIN].target_rpm = InputRPM;
+    MotorStates[ID - MOTOR_ID_MIN].current_rpm = InputRPM;
 
     Motor_Drive(InputRPM, ID);
-    can_send(&hfdcan1, 0x032, Motor_TxData_0x32, 8);
+    status = can_bus_send_std(&hfdcan1,
+                              MOTOR_SPEED_COMMAND_CAN_ID,
+                              Motor_TxData_0x32,
+                              sizeof(Motor_TxData_0x32),
+                              0U);
+    Motor_Exit_Critical(primask);
+
+    if(status != CAN_BUS_OK)
+    {
+        Motor_Smooth_Tx_Error_Count++;
+    }
 }
 
-/* 平滑控制 - 接口和内部逻辑完全未变 */
+/* 平滑控制：这里只更新目标，TIM6 每 10 ms 计算一次斜坡并发送。 */
 void Motor_Speed_Control_Smooth(int16_t InputRPM, uint8_t ID)
 {
-    if(ID < 1 || ID > 4)
+    if(Motor_ID_Is_Valid(ID) == 0U)
+    {
         return;
+    }
 
-    if(InputRPM > SPEED_RPM_MAX)
-        InputRPM = SPEED_RPM_MAX;
+    if(Motor_Driver_Initialized == 0U)
+    {
+        Motor_Driver_Init();
+    }
 
-    if(InputRPM < SPEED_RPM_MIN)
-        InputRPM = SPEED_RPM_MIN;
+    InputRPM = Motor_Limit_RPM(InputRPM);
 
-    MotorStates[ID - 1].target_rpm = InputRPM;
+    MotorStates[ID - MOTOR_ID_MIN].target_rpm = InputRPM;
 }
 
 /* 四电机 */
 void Motor_Control_All(int16_t target)
 {
-    for(uint8_t i = 1; i <= 4; i++)
+    for(uint8_t i = MOTOR_ID_MIN; i <= MOTOR_ID_MAX; i++)
     {
         Motor_Speed_Control_Smooth(target, i);
     }
@@ -135,18 +201,35 @@ void Motor_Control_All(int16_t target)
 /* 急停 */
 void Motor_Stop_Immediately(uint8_t ID)
 {
-    if(ID < 1 || ID > 4)
+    uint32_t primask;
+    can_bus_status_t status;
+
+    if(Motor_ID_Is_Valid(ID) == 0U)
+    {
         return;
+    }
 
-    MotorStates[ID - 1].target_rpm = 0;
-    MotorStates[ID - 1].current_rpm = 0;
+    if(Motor_Driver_Initialized == 0U)
+    {
+        Motor_Driver_Init();
+    }
 
-    uint8_t idx = (ID - 1) * 2;
+    primask = Motor_Enter_Critical();
+    MotorStates[ID - MOTOR_ID_MIN].target_rpm = 0;
+    MotorStates[ID - MOTOR_ID_MIN].current_rpm = 0;
+    Motor_Drive(0, ID);
 
-    Motor_TxData_0x32[idx] = 0;
-    Motor_TxData_0x32[idx + 1] = 0;
+    status = can_bus_send_std(&hfdcan1,
+                              MOTOR_SPEED_COMMAND_CAN_ID,
+                              Motor_TxData_0x32,
+                              sizeof(Motor_TxData_0x32),
+                              0U);
+    Motor_Exit_Critical(primask);
 
-    can_send(&hfdcan1, 0x032, Motor_TxData_0x32, 8);
+    if(status != CAN_BUS_OK)
+    {
+        Motor_Smooth_Tx_Error_Count++;
+    }
 }
 
 /* TIM中断 */
@@ -154,29 +237,39 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
     if(htim->Instance == TIM6)
     {
-        for(int i = 0; i < 4; i++)
-        {
-            float diff = MotorStates[i].target_rpm - MotorStates[i].current_rpm;
+        Motor_Smooth_Tick_Count++;
 
-            if(diff > MotorStates[i].accel_step)
+        for(uint8_t i = 0U; i < MOTOR_DRIVE_COUNT; i++)
+        {
+            int16_t target_rpm = MotorStates[i].target_rpm;
+            int16_t current_rpm = MotorStates[i].current_rpm;
+            int32_t diff = (int32_t)target_rpm - (int32_t)current_rpm;
+
+            if(diff > MotorStates[i].accel_step_rpm)
             {
-                MotorStates[i].current_rpm += MotorStates[i].accel_step;
+                current_rpm += MotorStates[i].accel_step_rpm;
             }
-            else if(diff < -MotorStates[i].accel_step)
+            else if(diff < -MotorStates[i].accel_step_rpm)
             {
-                MotorStates[i].current_rpm -= MotorStates[i].accel_step;
+                current_rpm -= MotorStates[i].accel_step_rpm;
             }
             else
             {
-                MotorStates[i].current_rpm = MotorStates[i].target_rpm;
+                current_rpm = target_rpm;
             }
 
-            Motor_Drive((int16_t)MotorStates[i].current_rpm, i + 1);
+            MotorStates[i].current_rpm = current_rpm;
+            Motor_Drive(current_rpm, (uint8_t)(i + MOTOR_ID_MIN));
         }
 
-        if(HAL_FDCAN_GetTxFifoFreeLevel(&hfdcan1) > 0)
+        /* 中断中禁止等待；FIFO 满则记错，下一拍（10 ms 后）自然重试。 */
+        if(can_bus_send_std(&hfdcan1,
+                            MOTOR_SPEED_COMMAND_CAN_ID,
+                            Motor_TxData_0x32,
+                            sizeof(Motor_TxData_0x32),
+                            0U) != CAN_BUS_OK)
         {
-            can_send(&hfdcan1, 0x032, Motor_TxData_0x32, 8);
+            Motor_Smooth_Tx_Error_Count++;
         }
     }
 }
@@ -199,29 +292,35 @@ void Ck_Check(uint8_t ID,
     tx_buf[6] = 0;
     tx_buf[7] = 0;
 
-    can_send(&hfdcan1, 0x107, tx_buf, 8);
+    can_send(&hfdcan1, MOTOR_QUERY_CAN_ID, tx_buf, MOTOR_CAN_DATA_LENGTH);
 }
 
 /* 数据解析 */
 void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo0ITs)
 {
+    /* 舵向电机使用 FDCAN2；其反馈不能写入 1~4 号驱动电机缓存。 */
+    if(hfdcan == NULL || hfdcan->Instance != FDCAN1)
+    {
+        return;
+    }
+
     if((RxFifo0ITs & FDCAN_IT_RX_FIFO0_NEW_MESSAGE) != RESET)
     {
         FDCAN_RxHeaderTypeDef RxHeader;
 
         if(HAL_FDCAN_GetRxMessage(hfdcan, FDCAN_RX_FIFO0, &RxHeader, RxData) == HAL_OK)
         {
-            uint8_t actual_id = (query_id == 1) ? 4 : (query_id - 1);
+            uint8_t actual_id = Motor_Last_Query_ID;
 
-            if(actual_id >= 1 && actual_id <= 4)
+            if(Motor_ID_Is_Valid(actual_id) != 0U)
             {
-                Motor_Reporter_Cache[actual_id - 1].FBSpeed =
+                Motor_Reporter_Cache[actual_id - MOTOR_ID_MIN].FBSpeed =
                 (int16_t)((RxData[0] << 8) | RxData[1]);
 
-                Motor_Reporter_Cache[actual_id - 1].Position =
+                Motor_Reporter_Cache[actual_id - MOTOR_ID_MIN].Position =
                 (uint16_t)((RxData[2] << 8) | RxData[3]);
 
-                Motor_Reporter_Cache[actual_id - 1].ErrCode =
+                Motor_Reporter_Cache[actual_id - MOTOR_ID_MIN].ErrCode =
                 RxData[4];
             }
         }
@@ -231,9 +330,11 @@ void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo0ITs)
 /* 轮询读取 */
 void App_Monitor_Read(void)
 {
+    /* 先保存本次真正发送的节点 ID，反馈回调不再依赖 query_id 的递增时序。 */
+    Motor_Last_Query_ID = query_id;
     Ck_Check(query_id, 1, 4, 5, NULL);
 
     query_id++;
-    if(query_id > 4)
-        query_id = 1;
+    if(query_id > MOTOR_ID_MAX)
+        query_id = MOTOR_ID_MIN;
 }

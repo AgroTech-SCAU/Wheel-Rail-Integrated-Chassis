@@ -21,7 +21,7 @@ typedef struct
      *
      * 驱动轮 ID：1~4
      */
-    uint8_t drive_ids[4];
+    uint8_t drive_ids[MOTOR_DRIVE_COUNT];
 
     /* 舵向轮 ID
      *
@@ -59,10 +59,11 @@ void Swerve_Chassis_Model_Init(
  *       1. 初始化运动学模型
  *       2. 设置驱动轮 ID：1~4
  *       3. 设置舵向轮 ID：5~8
- *       4. 调用 Motor_Driver_Init()
- *       5. 设置舵向电机 PP 模式
- *       6. 使能舵向电机
- *       7. 给舵向电机发送 0 位置目标
+ *       4. 设置舵向电机 PP 模式
+ *       5. 使能舵向电机
+ *       6. 给舵向电机发送 0 位置目标
+ *
+ * @note Motor_Driver_Init() 应在调用本函数前由 main.c 显式执行。
  */
 void Swerve_Chassis_Init(SwerveChassis* chassis);
 

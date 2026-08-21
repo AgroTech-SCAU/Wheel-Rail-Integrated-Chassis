@@ -193,7 +193,8 @@ void RS06_Set_Position_Target(FDCAN_HandleTypeDef* hfdcan, uint8_t motor_id, flo
  * 给出不污染主分支的测试函数，方便你在开发过程中验证 RS06 的基本功能是否正常。
  */
 void RS06_reset(void){
-    uint8_t motor_ids[] = {0x05, 0x06, 0x07, 0x08};
+    /* 舵向电机节点 ID 统一使用十进制表达；协议字段仍使用十六进制。 */
+    uint8_t motor_ids[] = {5U, 6U, 7U, 8U};
     float targets[] = {0.00f, 0.00f, 0.00f, 0.00f};
     int motor_count = sizeof(motor_ids) / sizeof(motor_ids[0]);
 

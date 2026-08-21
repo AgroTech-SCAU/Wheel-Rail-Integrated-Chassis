@@ -44,10 +44,10 @@ void Swerve_Chassis_Init(SwerveChassis* chassis)
      *
      * 驱动轮 ID：1~4
      */
-    chassis->drive_ids[0] = 1; // FL
-    chassis->drive_ids[1] = 2; // FR
-    chassis->drive_ids[2] = 3; // RR
-    chassis->drive_ids[3] = 4; // RL
+    chassis->drive_ids[0] = MOTOR_ID_1; // FL
+    chassis->drive_ids[1] = MOTOR_ID_2; // FR
+    chassis->drive_ids[2] = MOTOR_ID_3; // RR
+    chassis->drive_ids[3] = MOTOR_ID_4; // RL
 
     /* ---------------- 舵向轮 ID ----------------
      *
@@ -58,16 +58,8 @@ void Swerve_Chassis_Init(SwerveChassis* chassis)
     chassis->steer_ids[2] = 7; // RR
     chassis->steer_ids[3] = 8; // RL
 
-    /* ---------------- 初始化驱动轮和 CAN ----------------
-     *
-     * 你的 main.c 里面没有单独调用 Motor_Driver_Init()，
-     * 所以这里保留。
-     *
-     * Motor_Driver_Init() 内部会启动 FDCAN1 和 FDCAN2。
-     */
-    Motor_Driver_Init();
-
     /*
+     * Motor_Driver_Init() 由 main.c 显式调用。
      * 给 CAN 和电机一点上电稳定时间。
      */
     HAL_Delay(100);
@@ -76,7 +68,7 @@ void Swerve_Chassis_Init(SwerveChassis* chassis)
      *
      * 上电时先设置一次模式，再使能一次。
      */
-    for(int i = 0; i < 4; i++)
+    for(uint8_t i = 0U; i < MOTOR_DRIVE_COUNT; i++)
     {
         RS06_Set_Mode(
             &hfdcan2,
@@ -209,7 +201,7 @@ void Swerve_Chassis_Update(SwerveChassis* chassis)
 
     /* ---------------- 输出到真实电机 ---------------- */
 
-    for(int i = 0; i < 4; i++)
+    for(uint8_t i = 0U; i < MOTOR_DRIVE_COUNT; i++)
     {
         /* ============================================
            1. 驱动轮速度控制
