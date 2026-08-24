@@ -116,7 +116,6 @@ ChassisServiceStatus chassis_service_get_state(ChassisServiceState* out);
 - 遥控失联或 VRB 关闭时下发零速度
 - 初始化失败会进入锁存故障
 - 连续三次控制发送失败会进入锁存故障
-- 驱动接收队列溢出会进入锁存故障
 - 驱动反馈超时会进入锁存故障
 - 运动学输入或模型异常会进入锁存故障
 - 故障锁存后驱动轮下发零速且 RS06 下发停止命令

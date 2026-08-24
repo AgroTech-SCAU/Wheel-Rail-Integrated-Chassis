@@ -30,7 +30,6 @@
 #define CHASSIS_SEND_FAILURE_LIMIT 3u
 #define CHASSIS_LOG_PERIOD_MS 500u
 #define CHASSIS_RAD_S_TO_RPM 9.5492965855f
-#define CHASSIS_DRIVE_RX_QUEUE_DEPTH 8u
 
 #define REMOTE_CH_RIGHT_X 0u
 #define REMOTE_CH_RIGHT_Y 1u
@@ -70,10 +69,8 @@ typedef struct {
     Rs06SteerMotor steer;
     SteerWheel kinematics;
     ChassisServiceState state;
-    volatile Stm32FdcanFrame drive_rx_queue[CHASSIS_DRIVE_RX_QUEUE_DEPTH];
-    volatile uint8_t drive_rx_head;
-    volatile uint8_t drive_rx_tail;
-    volatile bool drive_rx_overflow;
+    volatile Stm32FdcanFrame pending_drive_frame;
+    volatile bool drive_frame_pending;
     uint8_t drive_ids[BENMO_DRIVE_MOTOR_COUNT];
     uint8_t steer_ids[BENMO_DRIVE_MOTOR_COUNT];
     uint32_t last_update_ms;
@@ -104,7 +101,6 @@ static void chassis_send_stop_once(void);
 static void chassis_latch_fault(ChassisFault fault);
 static bool chassis_record_send_result(bool success, ChassisFault fault);
 static bool chassis_initialize_steering(void);
-static void chassis_log_configuration(void);
 
 // ! ========================= 变 量 声 明 ========================= ! //
 
@@ -164,26 +160,19 @@ static void chassis_uart_error(void* context) {
 
 static void chassis_drive_rx(const Stm32FdcanFrame* frame, void* context) {
     ChassisServiceContext* self = (ChassisServiceContext*)context;
-    uint8_t next_head;
     uint8_t i;
     if(frame == NULL || self == NULL ||
        frame->id_type != STM32_FDCAN_ID_STANDARD ||
        frame->len != BENMO_DRIVE_MOTOR_CAN_DATA_LEN) {
         return;
     }
-    next_head =
-        (uint8_t)((self->drive_rx_head + 1u) % CHASSIS_DRIVE_RX_QUEUE_DEPTH);
-    if(next_head == self->drive_rx_tail) {
-        self->drive_rx_overflow = true;
-        return;
-    }
-    self->drive_rx_queue[self->drive_rx_head].id = frame->id;
-    self->drive_rx_queue[self->drive_rx_head].id_type = frame->id_type;
-    self->drive_rx_queue[self->drive_rx_head].len = frame->len;
+    self->pending_drive_frame.id = frame->id;
+    self->pending_drive_frame.id_type = frame->id_type;
+    self->pending_drive_frame.len = frame->len;
     for(i = 0u; i < frame->len; ++i) {
-        self->drive_rx_queue[self->drive_rx_head].data[i] = frame->data[i];
+        self->pending_drive_frame.data[i] = frame->data[i];
     }
-    self->drive_rx_head = next_head;
+    self->drive_frame_pending = true;
 }
 
 static float chassis_limit_float(float value, float minimum, float maximum) {
@@ -321,12 +310,17 @@ static void chassis_send_stop_once(void) {
 }
 
 static void chassis_latch_fault(ChassisFault fault) {
-    s_chassis.state.fault = fault;
-    s_chassis.state.fault_latched = true;
+    bool first_fault = !s_chassis.state.fault_latched;
+    if(first_fault) {
+        s_chassis.state.fault = fault;
+        s_chassis.state.fault_latched = true;
+    }
     s_chassis.fault_clear_armed = false;
     chassis_set_velocity(0.0f, 0.0f, 0.0f);
     chassis_send_stop_once();
-    (void)log_error("[安全] fault latched: %s", chassis_service_fault_str(fault));
+    if(first_fault) {
+        (void)log_error("fault latched: %s", chassis_service_fault_str(fault));
+    }
 }
 
 static bool chassis_record_send_result(bool success, ChassisFault fault) {
@@ -367,24 +361,8 @@ static bool chassis_initialize_steering(void) {
     return true;
 }
 
-static void chassis_log_configuration(void) {
-    log_info("============================================");
-    log_info("  轮轨复合底盘 - 分层架构初始化报告");
-    log_info("============================================");
-    log_info("[系统] STM32H723VGT6, app -> service -> device/domain/infra -> "
-             "platform");
-    log_info("[CAN] FDCAN1 驱动电机 500 kbit/s, FDCAN2 RS06 1 Mbit/s");
-    log_info("[驱动] ID=1..4, 限幅=%d..%d RPM, 斜坡=%d RPM/10ms",
-             BENMO_DRIVE_MOTOR_RPM_MIN, BENMO_DRIVE_MOTOR_RPM_MAX,
-             BENMO_DRIVE_MOTOR_RAMP_STEP_RPM);
-    log_info("[舵向] RS06 ID=5..8, PP 模式, ID 5/7 保留旧方向修正");
-    log_info("[底盘] length=%.3f m width=%.3f m radius=%.4f m max=%.2f m/s",
-             (double)CHASSIS_LENGTH_M, (double)CHASSIS_WIDTH_M,
-             (double)CHASSIS_WHEEL_RADIUS_M,
-             (double)CHASSIS_MAX_WHEEL_LINEAR_SPEED_M_S);
-    log_info("[遥控] UART5 iBUS, 失联/VRB关闭时保持使能并下发零速");
-    log_info("[安全] 初始化/连续发送/反馈超时故障锁存并停止全部执行器");
-    log_info("============================================");
+static void chassis_log_initialized(void) {
+    (void)log_info("system initialized");
 }
 
 // ! ========================= 接 口 函 数 实 现 ========================= ! //
@@ -457,7 +435,7 @@ ChassisServiceStatus chassis_service_init(void) {
 
     log_config.ops = &s_log_ops;
     log_config.level = LOG_LEVEL_INFO;
-    log_config.enable_color = true;
+    log_config.enable_color = false;
     log_config.async_write = false;
     if(log_init(&log_config) != LOG_STATUS_OK) {
         chassis_latch_fault(CHASSIS_FAULT_INITIALIZATION);
@@ -465,7 +443,7 @@ ChassisServiceStatus chassis_service_init(void) {
     }
 
     s_chassis.state.initialized = true;
-    chassis_log_configuration();
+    chassis_log_initialized();
     s_chassis.last_update_ms = stm32_time_now_ms();
     s_chassis.last_log_ms = s_chassis.last_update_ms;
     (void)benmo_drive_motor_reset_feedback_monitor(&s_chassis.drive);
@@ -485,24 +463,17 @@ ChassisServiceStatus chassis_service_update(void) {
         return CHASSIS_SERVICE_STATUS_NOT_INITIALIZED;
     }
     (void)fs_ia10b_maintain(&s_chassis.receiver);
-    if(s_chassis.drive_rx_overflow) {
-        uint32_t critical_state = stm32_critical_enter();
-        s_chassis.drive_rx_overflow = false;
-        stm32_critical_exit(critical_state);
-        chassis_latch_fault(CHASSIS_FAULT_DRIVE_RECEIVE_OVERFLOW);
-    }
-    while(s_chassis.drive_rx_tail != s_chassis.drive_rx_head) {
+    if(s_chassis.drive_frame_pending) {
         Stm32FdcanFrame frame;
         uint8_t i;
         uint32_t critical_state = stm32_critical_enter();
-        frame.id = s_chassis.drive_rx_queue[s_chassis.drive_rx_tail].id;
-        frame.id_type = s_chassis.drive_rx_queue[s_chassis.drive_rx_tail].id_type;
-        frame.len = s_chassis.drive_rx_queue[s_chassis.drive_rx_tail].len;
+        frame.id = s_chassis.pending_drive_frame.id;
+        frame.id_type = s_chassis.pending_drive_frame.id_type;
+        frame.len = s_chassis.pending_drive_frame.len;
         for(i = 0u; i < frame.len; ++i) {
-            frame.data[i] = s_chassis.drive_rx_queue[s_chassis.drive_rx_tail].data[i];
+            frame.data[i] = s_chassis.pending_drive_frame.data[i];
         }
-        s_chassis.drive_rx_tail = (uint8_t)((s_chassis.drive_rx_tail + 1u) %
-                                            CHASSIS_DRIVE_RX_QUEUE_DEPTH);
+        s_chassis.drive_frame_pending = false;
         stm32_critical_exit(critical_state);
         (void)benmo_drive_motor_handle_feedback(&s_chassis.drive, frame.id,
                                                 frame.data, frame.len);
@@ -665,8 +636,6 @@ const char* chassis_service_fault_str(ChassisFault fault) {
             return "DRIVE_TRANSMIT";
         case CHASSIS_FAULT_STEER_TRANSMIT:
             return "STEER_TRANSMIT";
-        case CHASSIS_FAULT_DRIVE_RECEIVE_OVERFLOW:
-            return "DRIVE_RECEIVE_OVERFLOW";
         case CHASSIS_FAULT_DRIVE_FEEDBACK_TIMEOUT:
             return "DRIVE_FEEDBACK_TIMEOUT";
         case CHASSIS_FAULT_KINEMATICS:
