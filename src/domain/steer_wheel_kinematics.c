@@ -1,8 +1,13 @@
+/**
+ * @file steer_wheel_kinematics.c
+ * @brief 四舵轮底盘运动学实现
+ */
+
 #include "steer_wheel_kinematics.h"
+
 #include <math.h>
 #include <stddef.h>
 #include <stdint.h>
-
 
 // ! ========================= 变 量 声 明 ========================= ! //
 
@@ -18,9 +23,7 @@
  */
 #define X(name, str) .name = STEER_WHEEL_##name,
 const struct SteerWheelInterface steer_wheel_interface = {
-    {
-        STEER_WHEEL_STATUS_TABLE
-    },
+    { STEER_WHEEL_STATUS_TABLE },
     .init = steer_wheel_init,
     .fk = steer_wheel_fk,
     .ik = steer_wheel_ik,
@@ -43,8 +46,10 @@ static bool sw_model_valid(const SteerWheelModel* model);
  * @return SteelWheelErrorCode 错误码
  */
 SteelWheelErrorCode steer_wheel_init(SteerWheel* steer_wheel, SteerWheelModel model) {
-    if(steer_wheel == NULL) return sw.INVALID_PARAM;
-    if(!sw_model_valid(&model)) return sw.INVALID_MODEL;
+    if(steer_wheel == NULL)
+        return sw.INVALID_PARAM;
+    if(!sw_model_valid(&model))
+        return sw.INVALID_MODEL;
 
     steer_wheel->model = model;
 
@@ -72,13 +77,17 @@ SteelWheelErrorCode steer_wheel_init(SteerWheel* steer_wheel, SteerWheelModel mo
  * @return SteelWheelErrorCode 错误码
  */
 SteelWheelErrorCode steer_wheel_fk(SteerWheel* steer_wheel) {
-    if(steer_wheel == NULL) return sw.INVALID_PARAM;
-    if(steer_wheel->initialized == false) return sw.NOT_INITIALIZE;
-    if(!sw_model_valid(&steer_wheel->model)) return sw.INVALID_MODEL;
+    if(steer_wheel == NULL)
+        return sw.INVALID_PARAM;
+    if(steer_wheel->initialized == false)
+        return sw.NOT_INITIALIZE;
+    if(!sw_model_valid(&steer_wheel->model))
+        return sw.INVALID_MODEL;
 
     for(uint8_t i = 0; i < 4; ++i) {
         if(!isfinite(steer_wheel->state.cur_wheels[i].wheel_omega) ||
-           !isfinite(steer_wheel->state.cur_wheels[i].steer_angle)) return sw.INVALID_PARAM;
+           !isfinite(steer_wheel->state.cur_wheels[i].steer_angle))
+            return sw.INVALID_PARAM;
     }
 
     float x[4];
@@ -116,9 +125,12 @@ SteelWheelErrorCode steer_wheel_fk(SteerWheel* steer_wheel) {
  * @return SteelWheelErrorCode 错误码
  */
 SteelWheelErrorCode steer_wheel_ik(SteerWheel* steer_wheel) {
-    if(steer_wheel == NULL) return sw.INVALID_PARAM;
-    if(steer_wheel->initialized == false) return sw.NOT_INITIALIZE;
-    if(!sw_model_valid(&steer_wheel->model)) return sw.INVALID_MODEL;
+    if(steer_wheel == NULL)
+        return sw.INVALID_PARAM;
+    if(steer_wheel->initialized == false)
+        return sw.NOT_INITIALIZE;
+    if(!sw_model_valid(&steer_wheel->model))
+        return sw.INVALID_MODEL;
 
     float x[4];
     float y[4];
@@ -128,7 +140,8 @@ SteelWheelErrorCode steer_wheel_ik(SteerWheel* steer_wheel) {
     const float vy = steer_wheel->control.vy;
     const float wz = steer_wheel->control.wz;
 
-    if(!isfinite(vx) || !isfinite(vy) || !isfinite(wz)) return sw.INVALID_PARAM;
+    if(!isfinite(vx) || !isfinite(vy) || !isfinite(wz))
+        return sw.INVALID_PARAM;
 
     float max_abs_linear_speed = 0.0f;
 
@@ -143,18 +156,21 @@ SteelWheelErrorCode steer_wheel_ik(SteerWheel* steer_wheel) {
             target_linear_speed = 0.0f;
             target_steer_angle = sw_wrap_pi(steer_wheel->state.cur_wheels[i].steer_angle);
         }
-        else target_steer_angle = atan2f(viy, vix);
+        else
+            target_steer_angle = atan2f(viy, vix);
 
         steer_wheel->control.wheels[i].wheel_omega = target_linear_speed / steer_wheel->model.wheel_radius;
         steer_wheel->control.wheels[i].steer_angle = target_steer_angle;
 
-        if(fabsf(target_linear_speed) > max_abs_linear_speed) max_abs_linear_speed = fabsf(target_linear_speed);
+        if(fabsf(target_linear_speed) > max_abs_linear_speed)
+            max_abs_linear_speed = fabsf(target_linear_speed);
     }
 
     if(steer_wheel->model.max_wheel_linear_speed > SW_EPS && max_abs_linear_speed > steer_wheel->model.max_wheel_linear_speed) {
         const float scale = steer_wheel->model.max_wheel_linear_speed / max_abs_linear_speed;
 
-        for(uint8_t i = 0; i < 4; ++i) steer_wheel->control.wheels[i].wheel_omega *= scale;
+        for(uint8_t i = 0; i < 4; ++i)
+            steer_wheel->control.wheels[i].wheel_omega *= scale;
     }
 
     return sw.OK;
@@ -165,28 +181,33 @@ SteelWheelErrorCode steer_wheel_ik(SteerWheel* steer_wheel) {
  * @param steer_wheel 舵轮运动学实例；输入单位为 m/s、rad/s，输出为 rad/s、rad
  */
 SteelWheelErrorCode steer_wheel_apply_legacy_57_correction(SteerWheel* steer_wheel) {
-    const uint8_t indexes[2] = {0U, 2U};
+    const uint8_t indexes[2] = { 0u, 2u };
     const float half_pi = 1.570796327f;
     float half_length;
     float half_width;
     float inverse_wz;
     uint8_t i;
 
-    if(steer_wheel == NULL) return sw.INVALID_PARAM;
-    if(steer_wheel->initialized == false) return sw.NOT_INITIALIZE;
-    if(!sw_model_valid(&steer_wheel->model)) return sw.INVALID_MODEL;
+    if(steer_wheel == NULL)
+        return sw.INVALID_PARAM;
+    if(steer_wheel->initialized == false)
+        return sw.NOT_INITIALIZE;
+    if(!sw_model_valid(&steer_wheel->model))
+        return sw.INVALID_MODEL;
     if(!isfinite(steer_wheel->control.vx) || !isfinite(steer_wheel->control.vy) ||
-       !isfinite(steer_wheel->control.wz)) return sw.INVALID_PARAM;
-    if(fabsf(steer_wheel->control.wz) <= SW_EPS) return sw.OK;
+       !isfinite(steer_wheel->control.wz))
+        return sw.INVALID_PARAM;
+    if(fabsf(steer_wheel->control.wz) <= SW_EPS)
+        return sw.OK;
 
     half_length = steer_wheel->model.length * 0.5f;
     half_width = steer_wheel->model.width * 0.5f;
     inverse_wz = -steer_wheel->control.wz;
 
-    for(i = 0U; i < 2U; ++i) {
+    for(i = 0u; i < 2u; ++i) {
         const uint8_t index = indexes[i];
-        const float x = index == 0U ? half_length : -half_length;
-        const float y = index == 0U ? half_width : -half_width;
+        const float x = index == 0u ? half_length : -half_length;
+        const float y = index == 0u ? half_width : -half_width;
         const float velocity_x = steer_wheel->control.vx - inverse_wz * y;
         const float velocity_y = steer_wheel->control.vy + inverse_wz * x;
         const float speed = sqrtf(velocity_x * velocity_x + velocity_y * velocity_y);
@@ -197,7 +218,8 @@ SteelWheelErrorCode steer_wheel_apply_legacy_57_correction(SteerWheel* steer_whe
         angle = speed > SW_EPS
                     ? atan2f(velocity_y, velocity_x) + half_pi
                     : steer_wheel->control.wheels[index].steer_angle + half_pi;
-        if(angle > SW_PI) angle -= SW_2PI;
+        if(angle > SW_PI)
+            angle -= SW_2PI;
         steer_wheel->control.wheels[index].steer_angle = angle;
     }
 
@@ -209,11 +231,14 @@ SteelWheelErrorCode steer_wheel_apply_legacy_57_correction(SteerWheel* steer_whe
  * @param status 错误码
  * @return const char* 错误码字符串
  */
-#define X(name, str) case STEER_WHEEL_##name: return str;
+#define X(name, str)         \
+    case STEER_WHEEL_##name: \
+        return str;
 const char* steer_wheel_error_code_to_str(SteelWheelErrorCode status) {
     switch(status) {
         STEER_WHEEL_STATUS_TABLE
-        default: return "UNKNOWN";
+        default:
+            return "UNKNOWN";
     }
 }
 #undef X
@@ -232,14 +257,18 @@ static void sw_get_wheel_pos(const SteerWheelModel* model, float x[4], float y[4
 
     /* 约定顺序: FL, FR, RR, RL */
     /* 【核心修改点】：将 Y 轴正方向改为向左 (标准 ROS/数学右手坐标系) */
-    x[0] = hx;  y[0] = hy;   // 左前 (FL)：Y轴正半轴
-    x[1] = hx;  y[1] = -hy;  // 右前 (FR)：Y轴负半轴
-    x[2] = -hx; y[2] = -hy;  // 右后 (RR)：Y轴负半轴
-    x[3] = -hx; y[3] = hy;   // 左后 (RL)：Y轴正半轴
+    x[0] = hx;
+    y[0] = hy; // 左前 (FL)：Y轴正半轴
+    x[1] = hx;
+    y[1] = -hy; // 右前 (FR)：Y轴负半轴
+    x[2] = -hx;
+    y[2] = -hy; // 右后 (RR)：Y轴负半轴
+    x[3] = -hx;
+    y[3] = hy; // 左后 (RL)：Y轴正半轴
 }
 
 /**
- * @brief 将角度归一化到 (-pi, pi]
+ * @brief 将角度归一化到负 pi 开正 pi 闭区间
  * @param angle 输入角度，单位 rad
  * @return float 归一化后的角度，单位 rad
  */

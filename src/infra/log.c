@@ -1,3 +1,8 @@
+/**
+ * @file log.c
+ * @brief 轻量级日志基础设施实现
+ */
+
 #include "log.h"
 
 #include <stdarg.h>
@@ -23,12 +28,18 @@ static uint32_t s_tx_count;
 
 // ! ========================= 私 有 函 数 声 明 ========================= ! //
 
-static LogStatus log_vwrite(LogLevel level, const char* color, const char* tag, const char* format, va_list args);
-static uint32_t log_append_text(char* buffer, uint32_t size, uint32_t pos, const char* text);
-static uint32_t log_append_format(char* buffer, uint32_t size, uint32_t pos, const char* format, ...);
-static uint32_t log_append_u64(char* buffer, uint32_t size, uint32_t pos, unsigned long long value);
-static uint32_t log_append_i64(char* buffer, uint32_t size, uint32_t pos, long long value);
-static uint32_t log_append_vofa_value(char* buffer, uint32_t size, uint32_t pos, const LogVofaValue* value);
+static LogStatus log_vwrite(LogLevel level, const char* color, const char* tag,
+                            const char* format, va_list args);
+static uint32_t log_append_text(char* buffer, uint32_t size, uint32_t pos,
+                                const char* text);
+static uint32_t log_append_format(char* buffer, uint32_t size, uint32_t pos,
+                                  const char* format, ...);
+static uint32_t log_append_u64(char* buffer, uint32_t size, uint32_t pos,
+                               unsigned long long value);
+static uint32_t log_append_i64(char* buffer, uint32_t size, uint32_t pos,
+                               long long value);
+static uint32_t log_append_vofa_value(char* buffer, uint32_t size, uint32_t pos,
+                                      const LogVofaValue* value);
 static LogStatus log_start_async_write(void);
 static LogStatus log_prepare_tx_buffer(char** tx_buffer);
 static LogStatus log_commit_tx_buffer(uint32_t len);
@@ -88,7 +99,8 @@ LogStatus log_warn(const char* format, ...) {
     LogStatus status;
 
     va_start(args, format);
-    status = log_vwrite(LOG_LEVEL_WARN, LOG_COLOR_YELLOW, "[WARN] ", format, args);
+    status =
+        log_vwrite(LOG_LEVEL_WARN, LOG_COLOR_YELLOW, "[WARN] ", format, args);
     va_end(args);
 
     return status;
@@ -159,7 +171,8 @@ LogVofaValue log_vofa_value_ptr(const void* value) {
     return vofa_value;
 }
 
-LogStatus log_vofa_write(const char* names, uint32_t count, const LogVofaValue* values) {
+LogStatus log_vofa_write(const char* names, uint32_t count,
+                         const LogVofaValue* values) {
     LogStatus status;
     char* tx_buffer;
     uint32_t pos = 0u;
@@ -217,7 +230,8 @@ const char* log_status_str(LogStatus status) {
 
 // ! ========================= 私 有 函 数 实 现 ========================= ! //
 
-static LogStatus log_vwrite(LogLevel level, const char* color, const char* tag, const char* format, va_list args) {
+static LogStatus log_vwrite(LogLevel level, const char* color, const char* tag,
+                            const char* format, va_list args) {
     int len;
     uint32_t pos = 0u;
     uint32_t remain;
@@ -273,7 +287,8 @@ static LogStatus log_vwrite(LogLevel level, const char* color, const char* tag, 
     return log_commit_tx_buffer(pos);
 }
 
-static uint32_t log_append_text(char* buffer, uint32_t size, uint32_t pos, const char* text) {
+static uint32_t log_append_text(char* buffer, uint32_t size, uint32_t pos,
+                                const char* text) {
     uint32_t i = 0u;
 
     if(buffer == 0 || size == 0u || text == 0) {
@@ -293,7 +308,8 @@ static uint32_t log_append_text(char* buffer, uint32_t size, uint32_t pos, const
     return pos;
 }
 
-static uint32_t log_append_format(char* buffer, uint32_t size, uint32_t pos, const char* format, ...) {
+static uint32_t log_append_format(char* buffer, uint32_t size, uint32_t pos,
+                                  const char* format, ...) {
     va_list args;
     int len;
     uint32_t remain;
@@ -319,7 +335,8 @@ static uint32_t log_append_format(char* buffer, uint32_t size, uint32_t pos, con
     return pos + (uint32_t)len;
 }
 
-static uint32_t log_append_u64(char* buffer, uint32_t size, uint32_t pos, unsigned long long value) {
+static uint32_t log_append_u64(char* buffer, uint32_t size, uint32_t pos,
+                               unsigned long long value) {
     char digits[20];
     uint32_t count = 0u;
 
@@ -348,7 +365,8 @@ static uint32_t log_append_u64(char* buffer, uint32_t size, uint32_t pos, unsign
     return pos;
 }
 
-static uint32_t log_append_i64(char* buffer, uint32_t size, uint32_t pos, long long value) {
+static uint32_t log_append_i64(char* buffer, uint32_t size, uint32_t pos,
+                               long long value) {
     unsigned long long magnitude;
 
     if(buffer == 0 || size == 0u || pos >= size) {
@@ -369,7 +387,8 @@ static uint32_t log_append_i64(char* buffer, uint32_t size, uint32_t pos, long l
     return log_append_u64(buffer, size, pos, (unsigned long long)value);
 }
 
-static uint32_t log_append_vofa_value(char* buffer, uint32_t size, uint32_t pos, const LogVofaValue* value) {
+static uint32_t log_append_vofa_value(char* buffer, uint32_t size, uint32_t pos,
+                                      const LogVofaValue* value) {
     if(value == 0) {
         return pos;
     }
@@ -385,10 +404,12 @@ static uint32_t log_append_vofa_value(char* buffer, uint32_t size, uint32_t pos,
             return log_append_format(buffer, size, pos, "%.6f", value->data.f64);
 
         case LOG_VOFA_VALUE_BOOL:
-            return log_append_text(buffer, size, pos, value->data.bool_value ? "1" : "0");
+            return log_append_text(buffer, size, pos,
+                                   value->data.bool_value ? "1" : "0");
 
         case LOG_VOFA_VALUE_CSTR:
-            return log_append_text(buffer, size, pos, value->data.cstr != 0 ? value->data.cstr : "(null)");
+            return log_append_text(buffer, size, pos,
+                                   value->data.cstr != 0 ? value->data.cstr : "(null)");
 
         case LOG_VOFA_VALUE_PTR:
             return log_append_format(buffer, size, pos, "%p", value->data.ptr);

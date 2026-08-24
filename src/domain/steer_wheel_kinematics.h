@@ -1,5 +1,10 @@
-#ifndef STEER_WHEEL_KINEMATICS_H
-#define STEER_WHEEL_KINEMATICS_H
+#ifndef _steer_wheel_kinematics_h_
+#define _steer_wheel_kinematics_h_
+
+/**
+ * @file steer_wheel_kinematics.h
+ * @brief 四舵轮底盘运动学接口
+ */
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -18,10 +23,10 @@
  * @param INVALID_MODEL 车型模型参数无效
  * @param NOT_INITIALIZE 舵轮运动学实例未初始化
  */
-#define STEER_WHEEL_STATUS_TABLE \
-    X(OK, "OK") \
+#define STEER_WHEEL_STATUS_TABLE          \
+    X(OK, "OK")                           \
     X(INVALID_PARAM, "Invalid Parameter") \
-    X(INVALID_MODEL, "Invalid Model") \
+    X(INVALID_MODEL, "Invalid Model")     \
     X(NOT_INITIALIZE, "Not Initialize")
 
 /**
@@ -36,7 +41,7 @@ typedef enum {
 /**
  * @brief 单个舵轮模块输出或反馈
  * @param wheel_omega 车轮角速度，单位 rad/s
- * @param steer_angle 舵向角，单位 rad，范围 (-pi, pi]
+ * @param steer_angle 舵向角 单位 rad 范围为负 pi 开正 pi 闭
  */
 typedef struct {
     float wheel_omega;
@@ -113,19 +118,19 @@ extern const struct SteerWheelInterface {
      * @param model 底盘模型参数
      * @return SteelWheelErrorCode 错误码
      */
-    SteelWheelErrorCode(*init)(SteerWheel* steer_wheel, SteerWheelModel model);
+    SteelWheelErrorCode (*init)(SteerWheel* steer_wheel, SteerWheelModel model);
     /**
      * @brief 正运动学解算，由四个轮模块反馈解算底盘速度
      * @param steer_wheel 舵轮运动学实例指针
      * @return SteelWheelErrorCode 错误码
      */
-    SteelWheelErrorCode(*fk)(SteerWheel* steer_wheel);
+    SteelWheelErrorCode (*fk)(SteerWheel* steer_wheel);
     /**
      * @brief 逆运动学解算，由底盘速度指令解算四个轮模块目标
      * @param steer_wheel 舵轮运动学实例指针
      * @return SteelWheelErrorCode 错误码
      */
-    SteelWheelErrorCode(*ik)(SteerWheel* steer_wheel);
+    SteelWheelErrorCode (*ik)(SteerWheel* steer_wheel);
     /**
      * @brief 舵轮运动学错误码转字符串
      * @param status 错误码
@@ -143,4 +148,4 @@ SteelWheelErrorCode steer_wheel_ik(SteerWheel* steer_wheel);
 SteelWheelErrorCode steer_wheel_apply_legacy_57_correction(SteerWheel* steer_wheel);
 const char* steer_wheel_error_code_to_str(SteelWheelErrorCode status);
 
-#endif /* STEER_WHEEL_KINEMATICS_H */
+#endif

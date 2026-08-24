@@ -9,8 +9,6 @@ Core/Src/*
 docs/
 Drivers/
 
-.clang-format
-.clangd
 .cproject
 .mxproject
 .project
