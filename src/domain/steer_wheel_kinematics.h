@@ -1,5 +1,5 @@
-#ifndef _steer_wheel_kine_h_
-#define _steer_wheel_kine_h_
+#ifndef STEER_WHEEL_KINEMATICS_H
+#define STEER_WHEEL_KINEMATICS_H
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -140,6 +140,7 @@ extern const struct SteerWheelInterface {
 SteelWheelErrorCode steer_wheel_init(SteerWheel* steer_wheel, SteerWheelModel model);
 SteelWheelErrorCode steer_wheel_fk(SteerWheel* steer_wheel);
 SteelWheelErrorCode steer_wheel_ik(SteerWheel* steer_wheel);
+SteelWheelErrorCode steer_wheel_apply_legacy_57_correction(SteerWheel* steer_wheel);
 const char* steer_wheel_error_code_to_str(SteelWheelErrorCode status);
 
-#endif
+#endif /* STEER_WHEEL_KINEMATICS_H */

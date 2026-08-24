@@ -6,7 +6,11 @@ Core/*
 Core/Src/*
 !Core/Src/main.c
 
+docs/
 Drivers/
+
+.clang-format
+.clangd
 .cproject
 .mxproject
 .project

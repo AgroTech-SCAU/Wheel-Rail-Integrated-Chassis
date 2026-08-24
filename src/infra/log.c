@@ -36,7 +36,8 @@ static LogStatus log_commit_tx_buffer(uint32_t len);
 // ! ========================= 接 口 函 数 实 现 ========================= ! //
 
 LogStatus log_init(const LogConfig* config) {
-    if(config == 0 || config->ops == 0 || config->ops->write == 0) {
+    if(config == 0 || config->ops == 0 || config->ops->write == 0 ||
+       config->level < LOG_LEVEL_NONE || config->level > LOG_LEVEL_INFO) {
         return LOG_STATUS_INVALID_PARAM;
     }
 
@@ -53,7 +54,7 @@ LogStatus log_init(const LogConfig* config) {
 }
 
 LogStatus log_set_level(LogLevel level) {
-    if(level > LOG_LEVEL_INFO) {
+    if(level < LOG_LEVEL_NONE || level > LOG_LEVEL_INFO) {
         return LOG_STATUS_INVALID_PARAM;
     }
 

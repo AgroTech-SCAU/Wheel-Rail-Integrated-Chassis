@@ -1,4 +1,4 @@
-#include "steer_wheel_kine.h"
+#include "steer_wheel_kinematics.h"
 #include <math.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -32,6 +32,7 @@ const struct SteerWheelInterface steer_wheel_interface = {
 
 static void sw_get_wheel_pos(const SteerWheelModel* model, float x[4], float y[4]);
 static float sw_wrap_pi(float angle);
+static bool sw_model_valid(const SteerWheelModel* model);
 
 // ! ========================= 接 口 函 数 实 现 ========================= ! //
 
@@ -43,7 +44,7 @@ static float sw_wrap_pi(float angle);
  */
 SteelWheelErrorCode steer_wheel_init(SteerWheel* steer_wheel, SteerWheelModel model) {
     if(steer_wheel == NULL) return sw.INVALID_PARAM;
-    if(model.length <= 0.0f || model.width <= 0.0f || model.wheel_radius <= 0.0f || model.max_wheel_linear_speed < 0.0f) return sw.INVALID_MODEL;
+    if(!sw_model_valid(&model)) return sw.INVALID_MODEL;
 
     steer_wheel->model = model;
 
@@ -73,7 +74,12 @@ SteelWheelErrorCode steer_wheel_init(SteerWheel* steer_wheel, SteerWheelModel mo
 SteelWheelErrorCode steer_wheel_fk(SteerWheel* steer_wheel) {
     if(steer_wheel == NULL) return sw.INVALID_PARAM;
     if(steer_wheel->initialized == false) return sw.NOT_INITIALIZE;
-    if(steer_wheel->model.length <= 0.0f || steer_wheel->model.width <= 0.0f || steer_wheel->model.wheel_radius <= 0.0f) return sw.INVALID_MODEL;
+    if(!sw_model_valid(&steer_wheel->model)) return sw.INVALID_MODEL;
+
+    for(uint8_t i = 0; i < 4; ++i) {
+        if(!isfinite(steer_wheel->state.cur_wheels[i].wheel_omega) ||
+           !isfinite(steer_wheel->state.cur_wheels[i].steer_angle)) return sw.INVALID_PARAM;
+    }
 
     float x[4];
     float y[4];
@@ -112,7 +118,7 @@ SteelWheelErrorCode steer_wheel_fk(SteerWheel* steer_wheel) {
 SteelWheelErrorCode steer_wheel_ik(SteerWheel* steer_wheel) {
     if(steer_wheel == NULL) return sw.INVALID_PARAM;
     if(steer_wheel->initialized == false) return sw.NOT_INITIALIZE;
-    if(steer_wheel->model.length <= 0.0f || steer_wheel->model.width <= 0.0f || steer_wheel->model.wheel_radius <= 0.0f) return sw.INVALID_MODEL;
+    if(!sw_model_valid(&steer_wheel->model)) return sw.INVALID_MODEL;
 
     float x[4];
     float y[4];
@@ -121,6 +127,8 @@ SteelWheelErrorCode steer_wheel_ik(SteerWheel* steer_wheel) {
     const float vx = steer_wheel->control.vx;
     const float vy = steer_wheel->control.vy;
     const float wz = steer_wheel->control.wz;
+
+    if(!isfinite(vx) || !isfinite(vy) || !isfinite(wz)) return sw.INVALID_PARAM;
 
     float max_abs_linear_speed = 0.0f;
 
@@ -147,6 +155,50 @@ SteelWheelErrorCode steer_wheel_ik(SteerWheel* steer_wheel) {
         const float scale = steer_wheel->model.max_wheel_linear_speed / max_abs_linear_speed;
 
         for(uint8_t i = 0; i < 4; ++i) steer_wheel->control.wheels[i].wheel_omega *= scale;
+    }
+
+    return sw.OK;
+}
+
+/**
+ * @brief 保留旧底盘对 ID 5/7 所在轮组的旋转方向和 90 度偏置修正
+ * @param steer_wheel 舵轮运动学实例；输入单位为 m/s、rad/s，输出为 rad/s、rad
+ */
+SteelWheelErrorCode steer_wheel_apply_legacy_57_correction(SteerWheel* steer_wheel) {
+    const uint8_t indexes[2] = {0U, 2U};
+    const float half_pi = 1.570796327f;
+    float half_length;
+    float half_width;
+    float inverse_wz;
+    uint8_t i;
+
+    if(steer_wheel == NULL) return sw.INVALID_PARAM;
+    if(steer_wheel->initialized == false) return sw.NOT_INITIALIZE;
+    if(!sw_model_valid(&steer_wheel->model)) return sw.INVALID_MODEL;
+    if(!isfinite(steer_wheel->control.vx) || !isfinite(steer_wheel->control.vy) ||
+       !isfinite(steer_wheel->control.wz)) return sw.INVALID_PARAM;
+    if(fabsf(steer_wheel->control.wz) <= SW_EPS) return sw.OK;
+
+    half_length = steer_wheel->model.length * 0.5f;
+    half_width = steer_wheel->model.width * 0.5f;
+    inverse_wz = -steer_wheel->control.wz;
+
+    for(i = 0U; i < 2U; ++i) {
+        const uint8_t index = indexes[i];
+        const float x = index == 0U ? half_length : -half_length;
+        const float y = index == 0U ? half_width : -half_width;
+        const float velocity_x = steer_wheel->control.vx - inverse_wz * y;
+        const float velocity_y = steer_wheel->control.vy + inverse_wz * x;
+        const float speed = sqrtf(velocity_x * velocity_x + velocity_y * velocity_y);
+        float angle;
+
+        steer_wheel->control.wheels[index].wheel_omega =
+            speed / steer_wheel->model.wheel_radius;
+        angle = speed > SW_EPS
+                    ? atan2f(velocity_y, velocity_x) + half_pi
+                    : steer_wheel->control.wheels[index].steer_angle + half_pi;
+        if(angle > SW_PI) angle -= SW_2PI;
+        steer_wheel->control.wheels[index].steer_angle = angle;
     }
 
     return sw.OK;
@@ -199,4 +251,12 @@ static float sw_wrap_pi(float angle) {
         angle += SW_2PI;
     }
     return angle;
+}
+
+static bool sw_model_valid(const SteerWheelModel* model) {
+    return model != NULL &&
+           isfinite(model->length) && isfinite(model->width) &&
+           isfinite(model->wheel_radius) && isfinite(model->max_wheel_linear_speed) &&
+           model->length > 0.0f && model->width > 0.0f &&
+           model->wheel_radius > 0.0f && model->max_wheel_linear_speed >= 0.0f;
 }

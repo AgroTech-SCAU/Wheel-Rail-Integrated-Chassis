@@ -26,7 +26,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "entry.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -103,7 +103,7 @@ int main(void)
   MX_FDCAN2_Init();
   MX_TIM15_Init();
   /* USER CODE BEGIN 2 */
-
+  entry_init();
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -111,8 +111,8 @@ int main(void)
   while (1)
   {
     /* USER CODE END WHILE */
-
     /* USER CODE BEGIN 3 */
+    entry_loop();
   }
   /* USER CODE END 3 */
 }

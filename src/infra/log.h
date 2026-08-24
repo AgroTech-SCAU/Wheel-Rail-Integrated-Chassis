@@ -8,15 +8,13 @@
  * 本模块只依赖一个底层写接口 LogPortOps.write，可对接阻塞 UART、UART DMA、RTT、USB CDC、文件或 mock buffer
  * 日志层负责格式化、级别过滤、可选 ANSI 颜色，以及异步输出时的缓冲区生命周期管理
  *
- * 最小同步用法
+ * 最小同步用法（底层写函数由 service 从 platform 绑定）
  *
  * @code
- * static bool board_log_write(const char* data, uint32_t len) {
- *     return HAL_UART_Transmit(&huart1, (uint8_t*)data, (uint16_t)len, HAL_MAX_DELAY) == HAL_OK;
- * }
+ * static bool project_log_write(const char* data, uint32_t len);
  *
  * static const LogPortOps log_ops = {
- *     .write = board_log_write,
+ *     .write = project_log_write,
  * };
  *
  * void app_init(void) {
@@ -32,24 +30,10 @@
  * }
  * @endcode
  *
- * UART DMA 异步用法
+ * 异步端口用法
  *
  * @code
- * static bool board_log_write(const char* data, uint32_t len) {
- *     return HAL_UART_Transmit_DMA(&huart1, (uint8_t*)data, (uint16_t)len) == HAL_OK;
- * }
- *
- * void HAL_UART_TxCpltCallback(UART_HandleTypeDef* huart) {
- *     if(huart == &huart1) {
- *         log_write_complete();
- *     }
- * }
- *
- * void HAL_UART_ErrorCallback(UART_HandleTypeDef* huart) {
- *     if(huart == &huart1) {
- *         log_write_complete();
- *     }
- * }
+ * platform 的发送完成或错误分发函数应调用 log_write_complete()
  * @endcode
  *
  * 注意
@@ -153,8 +137,8 @@ typedef struct {
         unsigned long long u64;
         double f64;
         bool bool_value;
-        const char* cstr;
-        const void* ptr;
+        const char *cstr;
+        const void *ptr;
     } data;
 } LogVofaValue;
 
@@ -168,7 +152,7 @@ typedef struct {
      * @param len 文本长度，单位 byte
      * @return true 表示成功，false 表示输出失败
      */
-    bool (*write)(const char* data, uint32_t len);
+    bool (*write)(const char *data, uint32_t len);
 } LogPortOps;
 
 /**
@@ -176,7 +160,7 @@ typedef struct {
  */
 typedef struct {
     /** 底层输出端口函数表，不能为空 */
-    const LogPortOps* ops;
+    const LogPortOps *ops;
     /** 初始日志级别 */
     LogLevel level;
     /** 是否输出 ANSI 颜色转义序列 */
@@ -197,7 +181,7 @@ typedef struct {
  * @param config 日志配置，必须提供有效的 LogPortOps.write
  * @return LogStatus 状态码
  */
-LogStatus log_init(const LogConfig* config);
+LogStatus log_init(const LogConfig *config);
 
 /**
  * @brief 修改当前日志输出级别
@@ -218,21 +202,21 @@ void log_write_complete(void);
  * @param format printf 风格格式字符串
  * @return LogStatus 状态码
  */
-LogStatus log_info(const char* format, ...) LOG_PRINTF_FORMAT(1, 2);
+LogStatus log_info(const char *format, ...) LOG_PRINTF_FORMAT(1, 2);
 
 /**
  * @brief 输出 warn 级别日志
  * @param format printf 风格格式字符串
  * @return LogStatus 状态码
  */
-LogStatus log_warn(const char* format, ...) LOG_PRINTF_FORMAT(1, 2);
+LogStatus log_warn(const char *format, ...) LOG_PRINTF_FORMAT(1, 2);
 
 /**
  * @brief 输出 error 级别日志
  * @param format printf 风格格式字符串
  * @return LogStatus 状态码
  */
-LogStatus log_error(const char* format, ...) LOG_PRINTF_FORMAT(1, 2);
+LogStatus log_error(const char *format, ...) LOG_PRINTF_FORMAT(1, 2);
 
 #if LOG_USE_C11
 
@@ -245,8 +229,8 @@ LogVofaValue log_vofa_value_i64(long long value);
 LogVofaValue log_vofa_value_u64(unsigned long long value);
 LogVofaValue log_vofa_value_f64(double value);
 LogVofaValue log_vofa_value_bool(bool value);
-LogVofaValue log_vofa_value_cstr(const char* value);
-LogVofaValue log_vofa_value_ptr(const void* value);
+LogVofaValue log_vofa_value_cstr(const char *value);
+LogVofaValue log_vofa_value_ptr(const void *value);
 
 /**
  * @brief VOFA+ 自动变量名输出接口
@@ -255,70 +239,69 @@ LogVofaValue log_vofa_value_ptr(const void* value);
  * @param values 变量值数组
  * @return LogStatus 状态码
  */
-LogStatus log_vofa_write(const char* names, uint32_t count, const LogVofaValue* values);
+LogStatus log_vofa_write(const char *names, uint32_t count, const LogVofaValue *values);
 
 /**
  * @brief 将日志状态码转换为静态字符串
  * @param status 日志状态码
  * @return const char* 状态码名称
  */
-const char* log_status_str(LogStatus status);
+const char *log_status_str(LogStatus status);
 
 #undef LOG_PRINTF_FORMAT
 
-#define LOG_VOFA_CAT_IMPL(a, b) a##b
-#define LOG_VOFA_CAT(a, b) LOG_VOFA_CAT_IMPL(a, b)
+#define LOG_VOFA_CAT_IMPL(a, b)                                                                                a##b
+#define LOG_VOFA_CAT(a, b)                                                                                     LOG_VOFA_CAT_IMPL(a, b)
 
 #define LOG_VOFA_ARG_COUNT_IMPL(_1, _2, _3, _4, _5, _6, _7, _8, _9, _10, _11, _12, _13, _14, _15, _16, N, ...) N
 #define LOG_VOFA_ARG_COUNT(...) \
     LOG_VOFA_ARG_COUNT_IMPL(__VA_ARGS__, 16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1)
 
 #if defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L)
-#define LOG_VOFA_VALUE(value) \
-    _Generic((value), \
-        bool: log_vofa_value_bool, \
-        char: log_vofa_value_i64, \
-        signed char: log_vofa_value_i64, \
-        unsigned char: log_vofa_value_u64, \
-        short: log_vofa_value_i64, \
-        unsigned short: log_vofa_value_u64, \
-        int: log_vofa_value_i64, \
-        unsigned int: log_vofa_value_u64, \
-        long: log_vofa_value_i64, \
-        unsigned long: log_vofa_value_u64, \
-        long long: log_vofa_value_i64, \
+#define LOG_VOFA_VALUE(value)                   \
+    _Generic((value),                           \
+        bool: log_vofa_value_bool,              \
+        char: log_vofa_value_i64,               \
+        signed char: log_vofa_value_i64,        \
+        unsigned char: log_vofa_value_u64,      \
+        short: log_vofa_value_i64,              \
+        unsigned short: log_vofa_value_u64,     \
+        int: log_vofa_value_i64,                \
+        unsigned int: log_vofa_value_u64,       \
+        long: log_vofa_value_i64,               \
+        unsigned long: log_vofa_value_u64,      \
+        long long: log_vofa_value_i64,          \
         unsigned long long: log_vofa_value_u64, \
-        float: log_vofa_value_f64, \
-        double: log_vofa_value_f64, \
-        long double: log_vofa_value_f64, \
-        char*: log_vofa_value_cstr, \
-        const char*: log_vofa_value_cstr, \
-        void*: log_vofa_value_ptr, \
-        const void*: log_vofa_value_ptr, \
-        default: log_vofa_value_i64 \
-    )(value)
+        float: log_vofa_value_f64,              \
+        double: log_vofa_value_f64,             \
+        long double: log_vofa_value_f64,        \
+        char *: log_vofa_value_cstr,            \
+        const char *: log_vofa_value_cstr,      \
+        void *: log_vofa_value_ptr,             \
+        const void *: log_vofa_value_ptr,       \
+        default: log_vofa_value_i64)(value)
 #else
 #error "log_vofa(...) requires C11 _Generic support. Please compile with -std=c11 or newer."
 #endif
 
-#define LOG_VOFA_VALUES_1(a) LOG_VOFA_VALUE(a)
-#define LOG_VOFA_VALUES_2(a, b) LOG_VOFA_VALUE(a), LOG_VOFA_VALUE(b)
-#define LOG_VOFA_VALUES_3(a, b, c) LOG_VOFA_VALUE(a), LOG_VOFA_VALUE(b), LOG_VOFA_VALUE(c)
-#define LOG_VOFA_VALUES_4(a, b, c, d) LOG_VOFA_VALUE(a), LOG_VOFA_VALUE(b), LOG_VOFA_VALUE(c), LOG_VOFA_VALUE(d)
-#define LOG_VOFA_VALUES_5(a, b, c, d, e) LOG_VOFA_VALUE(a), LOG_VOFA_VALUE(b), LOG_VOFA_VALUE(c), LOG_VOFA_VALUE(d), LOG_VOFA_VALUE(e)
-#define LOG_VOFA_VALUES_6(a, b, c, d, e, f) LOG_VOFA_VALUE(a), LOG_VOFA_VALUE(b), LOG_VOFA_VALUE(c), LOG_VOFA_VALUE(d), LOG_VOFA_VALUE(e), LOG_VOFA_VALUE(f)
-#define LOG_VOFA_VALUES_7(a, b, c, d, e, f, g) LOG_VOFA_VALUE(a), LOG_VOFA_VALUE(b), LOG_VOFA_VALUE(c), LOG_VOFA_VALUE(d), LOG_VOFA_VALUE(e), LOG_VOFA_VALUE(f), LOG_VOFA_VALUE(g)
-#define LOG_VOFA_VALUES_8(a, b, c, d, e, f, g, h) LOG_VOFA_VALUE(a), LOG_VOFA_VALUE(b), LOG_VOFA_VALUE(c), LOG_VOFA_VALUE(d), LOG_VOFA_VALUE(e), LOG_VOFA_VALUE(f), LOG_VOFA_VALUE(g), LOG_VOFA_VALUE(h)
-#define LOG_VOFA_VALUES_9(a, b, c, d, e, f, g, h, i) LOG_VOFA_VALUE(a), LOG_VOFA_VALUE(b), LOG_VOFA_VALUE(c), LOG_VOFA_VALUE(d), LOG_VOFA_VALUE(e), LOG_VOFA_VALUE(f), LOG_VOFA_VALUE(g), LOG_VOFA_VALUE(h), LOG_VOFA_VALUE(i)
-#define LOG_VOFA_VALUES_10(a, b, c, d, e, f, g, h, i, j) LOG_VOFA_VALUE(a), LOG_VOFA_VALUE(b), LOG_VOFA_VALUE(c), LOG_VOFA_VALUE(d), LOG_VOFA_VALUE(e), LOG_VOFA_VALUE(f), LOG_VOFA_VALUE(g), LOG_VOFA_VALUE(h), LOG_VOFA_VALUE(i), LOG_VOFA_VALUE(j)
-#define LOG_VOFA_VALUES_11(a, b, c, d, e, f, g, h, i, j, k) LOG_VOFA_VALUE(a), LOG_VOFA_VALUE(b), LOG_VOFA_VALUE(c), LOG_VOFA_VALUE(d), LOG_VOFA_VALUE(e), LOG_VOFA_VALUE(f), LOG_VOFA_VALUE(g), LOG_VOFA_VALUE(h), LOG_VOFA_VALUE(i), LOG_VOFA_VALUE(j), LOG_VOFA_VALUE(k)
-#define LOG_VOFA_VALUES_12(a, b, c, d, e, f, g, h, i, j, k, l) LOG_VOFA_VALUE(a), LOG_VOFA_VALUE(b), LOG_VOFA_VALUE(c), LOG_VOFA_VALUE(d), LOG_VOFA_VALUE(e), LOG_VOFA_VALUE(f), LOG_VOFA_VALUE(g), LOG_VOFA_VALUE(h), LOG_VOFA_VALUE(i), LOG_VOFA_VALUE(j), LOG_VOFA_VALUE(k), LOG_VOFA_VALUE(l)
-#define LOG_VOFA_VALUES_13(a, b, c, d, e, f, g, h, i, j, k, l, m) LOG_VOFA_VALUE(a), LOG_VOFA_VALUE(b), LOG_VOFA_VALUE(c), LOG_VOFA_VALUE(d), LOG_VOFA_VALUE(e), LOG_VOFA_VALUE(f), LOG_VOFA_VALUE(g), LOG_VOFA_VALUE(h), LOG_VOFA_VALUE(i), LOG_VOFA_VALUE(j), LOG_VOFA_VALUE(k), LOG_VOFA_VALUE(l), LOG_VOFA_VALUE(m)
-#define LOG_VOFA_VALUES_14(a, b, c, d, e, f, g, h, i, j, k, l, m, n) LOG_VOFA_VALUE(a), LOG_VOFA_VALUE(b), LOG_VOFA_VALUE(c), LOG_VOFA_VALUE(d), LOG_VOFA_VALUE(e), LOG_VOFA_VALUE(f), LOG_VOFA_VALUE(g), LOG_VOFA_VALUE(h), LOG_VOFA_VALUE(i), LOG_VOFA_VALUE(j), LOG_VOFA_VALUE(k), LOG_VOFA_VALUE(l), LOG_VOFA_VALUE(m), LOG_VOFA_VALUE(n)
-#define LOG_VOFA_VALUES_15(a, b, c, d, e, f, g, h, i, j, k, l, m, n, o) LOG_VOFA_VALUE(a), LOG_VOFA_VALUE(b), LOG_VOFA_VALUE(c), LOG_VOFA_VALUE(d), LOG_VOFA_VALUE(e), LOG_VOFA_VALUE(f), LOG_VOFA_VALUE(g), LOG_VOFA_VALUE(h), LOG_VOFA_VALUE(i), LOG_VOFA_VALUE(j), LOG_VOFA_VALUE(k), LOG_VOFA_VALUE(l), LOG_VOFA_VALUE(m), LOG_VOFA_VALUE(n), LOG_VOFA_VALUE(o)
+#define LOG_VOFA_VALUES_1(a)                                               LOG_VOFA_VALUE(a)
+#define LOG_VOFA_VALUES_2(a, b)                                            LOG_VOFA_VALUE(a), LOG_VOFA_VALUE(b)
+#define LOG_VOFA_VALUES_3(a, b, c)                                         LOG_VOFA_VALUE(a), LOG_VOFA_VALUE(b), LOG_VOFA_VALUE(c)
+#define LOG_VOFA_VALUES_4(a, b, c, d)                                      LOG_VOFA_VALUE(a), LOG_VOFA_VALUE(b), LOG_VOFA_VALUE(c), LOG_VOFA_VALUE(d)
+#define LOG_VOFA_VALUES_5(a, b, c, d, e)                                   LOG_VOFA_VALUE(a), LOG_VOFA_VALUE(b), LOG_VOFA_VALUE(c), LOG_VOFA_VALUE(d), LOG_VOFA_VALUE(e)
+#define LOG_VOFA_VALUES_6(a, b, c, d, e, f)                                LOG_VOFA_VALUE(a), LOG_VOFA_VALUE(b), LOG_VOFA_VALUE(c), LOG_VOFA_VALUE(d), LOG_VOFA_VALUE(e), LOG_VOFA_VALUE(f)
+#define LOG_VOFA_VALUES_7(a, b, c, d, e, f, g)                             LOG_VOFA_VALUE(a), LOG_VOFA_VALUE(b), LOG_VOFA_VALUE(c), LOG_VOFA_VALUE(d), LOG_VOFA_VALUE(e), LOG_VOFA_VALUE(f), LOG_VOFA_VALUE(g)
+#define LOG_VOFA_VALUES_8(a, b, c, d, e, f, g, h)                          LOG_VOFA_VALUE(a), LOG_VOFA_VALUE(b), LOG_VOFA_VALUE(c), LOG_VOFA_VALUE(d), LOG_VOFA_VALUE(e), LOG_VOFA_VALUE(f), LOG_VOFA_VALUE(g), LOG_VOFA_VALUE(h)
+#define LOG_VOFA_VALUES_9(a, b, c, d, e, f, g, h, i)                       LOG_VOFA_VALUE(a), LOG_VOFA_VALUE(b), LOG_VOFA_VALUE(c), LOG_VOFA_VALUE(d), LOG_VOFA_VALUE(e), LOG_VOFA_VALUE(f), LOG_VOFA_VALUE(g), LOG_VOFA_VALUE(h), LOG_VOFA_VALUE(i)
+#define LOG_VOFA_VALUES_10(a, b, c, d, e, f, g, h, i, j)                   LOG_VOFA_VALUE(a), LOG_VOFA_VALUE(b), LOG_VOFA_VALUE(c), LOG_VOFA_VALUE(d), LOG_VOFA_VALUE(e), LOG_VOFA_VALUE(f), LOG_VOFA_VALUE(g), LOG_VOFA_VALUE(h), LOG_VOFA_VALUE(i), LOG_VOFA_VALUE(j)
+#define LOG_VOFA_VALUES_11(a, b, c, d, e, f, g, h, i, j, k)                LOG_VOFA_VALUE(a), LOG_VOFA_VALUE(b), LOG_VOFA_VALUE(c), LOG_VOFA_VALUE(d), LOG_VOFA_VALUE(e), LOG_VOFA_VALUE(f), LOG_VOFA_VALUE(g), LOG_VOFA_VALUE(h), LOG_VOFA_VALUE(i), LOG_VOFA_VALUE(j), LOG_VOFA_VALUE(k)
+#define LOG_VOFA_VALUES_12(a, b, c, d, e, f, g, h, i, j, k, l)             LOG_VOFA_VALUE(a), LOG_VOFA_VALUE(b), LOG_VOFA_VALUE(c), LOG_VOFA_VALUE(d), LOG_VOFA_VALUE(e), LOG_VOFA_VALUE(f), LOG_VOFA_VALUE(g), LOG_VOFA_VALUE(h), LOG_VOFA_VALUE(i), LOG_VOFA_VALUE(j), LOG_VOFA_VALUE(k), LOG_VOFA_VALUE(l)
+#define LOG_VOFA_VALUES_13(a, b, c, d, e, f, g, h, i, j, k, l, m)          LOG_VOFA_VALUE(a), LOG_VOFA_VALUE(b), LOG_VOFA_VALUE(c), LOG_VOFA_VALUE(d), LOG_VOFA_VALUE(e), LOG_VOFA_VALUE(f), LOG_VOFA_VALUE(g), LOG_VOFA_VALUE(h), LOG_VOFA_VALUE(i), LOG_VOFA_VALUE(j), LOG_VOFA_VALUE(k), LOG_VOFA_VALUE(l), LOG_VOFA_VALUE(m)
+#define LOG_VOFA_VALUES_14(a, b, c, d, e, f, g, h, i, j, k, l, m, n)       LOG_VOFA_VALUE(a), LOG_VOFA_VALUE(b), LOG_VOFA_VALUE(c), LOG_VOFA_VALUE(d), LOG_VOFA_VALUE(e), LOG_VOFA_VALUE(f), LOG_VOFA_VALUE(g), LOG_VOFA_VALUE(h), LOG_VOFA_VALUE(i), LOG_VOFA_VALUE(j), LOG_VOFA_VALUE(k), LOG_VOFA_VALUE(l), LOG_VOFA_VALUE(m), LOG_VOFA_VALUE(n)
+#define LOG_VOFA_VALUES_15(a, b, c, d, e, f, g, h, i, j, k, l, m, n, o)    LOG_VOFA_VALUE(a), LOG_VOFA_VALUE(b), LOG_VOFA_VALUE(c), LOG_VOFA_VALUE(d), LOG_VOFA_VALUE(e), LOG_VOFA_VALUE(f), LOG_VOFA_VALUE(g), LOG_VOFA_VALUE(h), LOG_VOFA_VALUE(i), LOG_VOFA_VALUE(j), LOG_VOFA_VALUE(k), LOG_VOFA_VALUE(l), LOG_VOFA_VALUE(m), LOG_VOFA_VALUE(n), LOG_VOFA_VALUE(o)
 #define LOG_VOFA_VALUES_16(a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p) LOG_VOFA_VALUE(a), LOG_VOFA_VALUE(b), LOG_VOFA_VALUE(c), LOG_VOFA_VALUE(d), LOG_VOFA_VALUE(e), LOG_VOFA_VALUE(f), LOG_VOFA_VALUE(g), LOG_VOFA_VALUE(h), LOG_VOFA_VALUE(i), LOG_VOFA_VALUE(j), LOG_VOFA_VALUE(k), LOG_VOFA_VALUE(l), LOG_VOFA_VALUE(m), LOG_VOFA_VALUE(n), LOG_VOFA_VALUE(o), LOG_VOFA_VALUE(p)
 
-#define LOG_VOFA_VALUES(...) LOG_VOFA_CAT(LOG_VOFA_VALUES_, LOG_VOFA_ARG_COUNT(__VA_ARGS__))(__VA_ARGS__)
+#define LOG_VOFA_VALUES(...)                                               LOG_VOFA_CAT(LOG_VOFA_VALUES_, LOG_VOFA_ARG_COUNT(__VA_ARGS__))(__VA_ARGS__)
 
 /**
  * @brief 自动输出 VOFA 格式数据
@@ -326,8 +309,8 @@ const char* log_status_str(LogStatus status);
  * @note 至少传入 1 个参数，最多默认支持 16 个参数
  * @note 变量名通过 #__VA_ARGS__ 获取，因此请传入简单变量名或简单表达式
  */
-#define log_vofa(...) \
-    log_vofa_write(#__VA_ARGS__, \
+#define log_vofa(...)                                         \
+    log_vofa_write(#__VA_ARGS__,                              \
                    (uint32_t)LOG_VOFA_ARG_COUNT(__VA_ARGS__), \
                    (const LogVofaValue[]){LOG_VOFA_VALUES(__VA_ARGS__)})
 
