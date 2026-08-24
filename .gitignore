@@ -1,0 +1,14 @@
+.settings/
+build/
+
+Core/*
+!Core/Src/
+Core/Src/*
+!Core/Src/main.c
+
+Drivers/
+.cproject
+.mxproject
+.project
+STM32H723VGTX_FLASH.ld
+STM32H723VGTX_RAM.ld
