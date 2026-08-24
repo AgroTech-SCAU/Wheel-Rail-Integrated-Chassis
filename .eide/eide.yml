@@ -1,5 +1,5 @@
 version: "4.1"
-name: mov_motor_code
+name: wheel_rail
 type: ARM
 deviceName: null
 packDir: null
