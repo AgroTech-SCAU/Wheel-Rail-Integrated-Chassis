@@ -71,6 +71,10 @@ SteelWheelErrorCode steer_wheel_init(SteerWheel* steer_wheel, SteerWheelModel mo
     steer_wheel->state.cur_vy = 0.0f;
     steer_wheel->state.cur_wz = 0.0f;
     steer_wheel->reverse_initialized = false;
+    steer_wheel->reference_initialized = false;
+    for(uint8_t i = 0u; i < 4u; ++i) {
+        steer_wheel->last_reference_angle[i] = 0.0f;
+    }
     steer_wheel->initialized = true;
 
     return sw.OK;
@@ -253,6 +257,7 @@ SteelWheelErrorCode steer_wheel_optimize_targets(
         float reverse_delta;
         bool choose_reverse;
         float original_speed;
+        float reference_angle;
 
         if(!isfinite(reference_angles[i]) ||
            !isfinite(steer_wheel->control.wheels[i].wheel_omega) ||
@@ -277,9 +282,17 @@ SteelWheelErrorCode steer_wheel_optimize_targets(
         target_angle = sw_wrap_pi(steer_wheel->control.wheels[i].steer_angle);
         original_speed = steer_wheel->control.wheels[i].wheel_omega;
 
+        reference_angle = reference_angles[i];
+        if(steer_wheel->reference_initialized) {
+            reference_angle = steer_wheel->last_reference_angle[i] +
+                              sw_angle_delta(reference_angles[i],
+                                             steer_wheel->last_reference_angle[i]);
+        }
+        steer_wheel->last_reference_angle[i] = reference_angle;
+
         /* 比较两个等效解：正常角和旋转 pi 后反向驱动角 */
-        normal_delta = sw_angle_delta(target_angle, reference_angles[i]);
-        reverse_delta = sw_angle_delta(target_angle + SW_PI, reference_angles[i]);
+        normal_delta = sw_angle_delta(target_angle, reference_angle);
+        reverse_delta = sw_angle_delta(target_angle + SW_PI, reference_angle);
 
         choose_reverse = steer_wheel->reverse_drive[i];
         if(!steer_wheel->reverse_initialized ||
@@ -288,20 +301,31 @@ SteelWheelErrorCode steer_wheel_optimize_targets(
             choose_reverse = fabsf(reverse_delta) + SW_REVERSE_SELECTION_HYSTERESIS_RAD < fabsf(normal_delta);
         }
 
+        {
+            float selected_angle = reference_angle +
+                                   (choose_reverse ? reverse_delta : normal_delta);
+            float alternate_angle = reference_angle +
+                                    (choose_reverse ? normal_delta : reverse_delta);
+            selected_angle = sw_wrap_pi(selected_angle);
+            alternate_angle = sw_wrap_pi(alternate_angle);
+
+            if(fabsf(selected_angle) > SW_STEER_SAFE_LIMIT_RAD &&
+               fabsf(alternate_angle) <= SW_STEER_SAFE_LIMIT_RAD) {
+                choose_reverse = !choose_reverse;
+                selected_angle = alternate_angle;
+            }
+
+            target_angle = selected_angle;
+        }
+
         steer_wheel->reverse_drive[i] = choose_reverse;
-        target_angle = reference_angles[i] +
-                       (choose_reverse ? reverse_delta : normal_delta);
         steer_wheel->control.wheels[i].wheel_omega =
             choose_reverse ? -original_speed : original_speed;
-        target_angle = sw_wrap_pi(target_angle);
-        if(target_angle > SW_STEER_SAFE_LIMIT_RAD)
-            target_angle = SW_STEER_SAFE_LIMIT_RAD;
-        else if(target_angle < -SW_STEER_SAFE_LIMIT_RAD)
-            target_angle = -SW_STEER_SAFE_LIMIT_RAD;
         steer_wheel->control.wheels[i].steer_angle = target_angle;
     }
 
     steer_wheel->reverse_initialized = true;
+    steer_wheel->reference_initialized = true;
     return sw.OK;
 }
 

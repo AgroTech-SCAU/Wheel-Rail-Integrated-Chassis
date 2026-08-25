@@ -104,6 +104,9 @@ typedef struct {
     /* 最近角优化状态：保存等效角选择，避免多周期后正反方案来回跳变 */
     bool reverse_drive[4];
     bool reverse_initialized;
+    /* 连续反馈角，避免 +pi/-pi 跳变导致偶发反向 */
+    float last_reference_angle[4];
+    bool reference_initialized;
     bool initialized;
 } SteerWheel;
 
