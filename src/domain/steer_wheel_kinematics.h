@@ -101,6 +101,9 @@ typedef struct {
     SteerWheelModel model;
     SteerWheelControl control;
     SteerWheelState state;
+    /* 最近角优化状态：保存等效角选择，避免多周期后正反方案来回跳变 */
+    bool reverse_drive[4];
+    bool reverse_initialized;
     bool initialized;
 } SteerWheel;
 

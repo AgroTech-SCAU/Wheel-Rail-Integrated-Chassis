@@ -36,7 +36,7 @@
 #define CHASSIS_STEER_HOME_MAX_SPEED_RAD_S 1.2f
 #define CHASSIS_STEER_HOME_DEADBAND_RAD 0.03f
 #define CHASSIS_STEER_HOME_STABLE_CYCLES 8u
-#define CHASSIS_STEER_HOME_TIMEOUT_MS 2000u
+#define CHASSIS_STEER_HOME_TIMEOUT_MS 8000u
 #define CHASSIS_STEER_FEEDBACK_MAX_AGE_MS 100u
 #define CHASSIS_RAD_TO_MDEG 57295.7795131f
 
@@ -498,7 +498,7 @@ static int8_t chassis_prepare_next_steering_motor(bool velocity_mode) {
 
     status = velocity_mode
                  ? rs06_steer_motor_prepare_velocity(&s_chassis.steer,
-                                                      s_chassis.steer_ids[i])
+                                                     s_chassis.steer_ids[i])
                  : rs06_steer_motor_prepare_pp_raw(
                        &s_chassis.steer, s_chassis.steer_ids[i],
                        steer_home_raw_position_target(
@@ -969,11 +969,17 @@ ChassisServiceStatus chassis_service_update(void) {
         chassis_latch_fault(CHASSIS_FAULT_KINEMATICS);
         return CHASSIS_SERVICE_STATUS_KINEMATICS_ERROR;
     }
-    if(steer_wheel_optimize_targets(&s_chassis.kinematics,
-                                    s_chassis.last_steer_target) !=
-       STEER_WHEEL_OK) {
-        chassis_latch_fault(CHASSIS_FAULT_KINEMATICS);
-        return CHASSIS_SERVICE_STATUS_KINEMATICS_ERROR;
+    {
+        float feedback_reference[BENMO_DRIVE_MOTOR_COUNT];
+        for(i = 0u; i < BENMO_DRIVE_MOTOR_COUNT; ++i) {
+            feedback_reference[i] = s_chassis.steer_feedback_angle[i];
+        }
+        if(steer_wheel_optimize_targets(&s_chassis.kinematics,
+                                        feedback_reference) !=
+           STEER_WHEEL_OK) {
+            chassis_latch_fault(CHASSIS_FAULT_KINEMATICS);
+            return CHASSIS_SERVICE_STATUS_KINEMATICS_ERROR;
+        }
     }
 
     for(i = 0u; i < BENMO_DRIVE_MOTOR_COUNT; ++i) {
@@ -993,7 +999,7 @@ ChassisServiceStatus chassis_service_update(void) {
             rs06_steer_motor_set_raw_position_target(
                 &s_chassis.steer, s_chassis.steer_ids[i],
                 raw_target) ==
-                RS06_STEER_STATUS_OK;
+            RS06_STEER_STATUS_OK;
         if(!steer_send_ok) {
             steer_sends_ok = false;
         }

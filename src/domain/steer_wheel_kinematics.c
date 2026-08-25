@@ -18,6 +18,7 @@
 #define SW_HALF_PI (0.5f * SW_PI)
 #define SW_EPS 1e-6f
 #define SW_STEER_SAFE_LIMIT_RAD 3.09159265f
+#define SW_REVERSE_SELECTION_HYSTERESIS_RAD 0.03f
 
 /**
  * @brief 舵轮运动学入口单例定义表
@@ -36,6 +37,7 @@ const struct SteerWheelInterface steer_wheel_interface = {
 
 static void sw_get_wheel_pos(const SteerWheelModel* model, float x[4], float y[4]);
 static float sw_wrap_pi(float angle);
+static float sw_angle_delta(float target, float reference);
 static bool sw_model_valid(const SteerWheelModel* model);
 
 // ! ========================= 接 口 函 数 实 现 ========================= ! //
@@ -55,6 +57,7 @@ SteelWheelErrorCode steer_wheel_init(SteerWheel* steer_wheel, SteerWheelModel mo
     steer_wheel->model = model;
 
     for(uint8_t i = 0; i < 4; ++i) {
+        steer_wheel->reverse_drive[i] = false;
         steer_wheel->control.wheels[i].wheel_omega = 0.0f;
         steer_wheel->control.wheels[i].steer_angle = 0.0f;
         steer_wheel->state.cur_wheels[i].wheel_omega = 0.0f;
@@ -67,6 +70,7 @@ SteelWheelErrorCode steer_wheel_init(SteerWheel* steer_wheel, SteerWheelModel mo
     steer_wheel->state.cur_vx = 0.0f;
     steer_wheel->state.cur_vy = 0.0f;
     steer_wheel->state.cur_wz = 0.0f;
+    steer_wheel->reverse_initialized = false;
     steer_wheel->initialized = true;
 
     return sw.OK;
@@ -247,6 +251,8 @@ SteelWheelErrorCode steer_wheel_optimize_targets(
         float target_angle;
         float normal_delta;
         float reverse_delta;
+        bool choose_reverse;
+        float original_speed;
 
         if(!isfinite(reference_angles[i]) ||
            !isfinite(steer_wheel->control.wheels[i].wheel_omega) ||
@@ -269,16 +275,24 @@ SteelWheelErrorCode steer_wheel_optimize_targets(
         }
 
         target_angle = sw_wrap_pi(steer_wheel->control.wheels[i].steer_angle);
-        normal_delta = sw_wrap_pi(target_angle - reference_angles[i]);
-        reverse_delta =
-            sw_wrap_pi(target_angle + SW_PI - reference_angles[i]);
-        if(fabsf(reverse_delta) < fabsf(normal_delta)) {
-            target_angle = reference_angles[i] + reverse_delta;
-            steer_wheel->control.wheels[i].wheel_omega =
-                -steer_wheel->control.wheels[i].wheel_omega;
+        original_speed = steer_wheel->control.wheels[i].wheel_omega;
+
+        /* 比较两个等效解：正常角和旋转 pi 后反向驱动角 */
+        normal_delta = sw_angle_delta(target_angle, reference_angles[i]);
+        reverse_delta = sw_angle_delta(target_angle + SW_PI, reference_angles[i]);
+
+        choose_reverse = steer_wheel->reverse_drive[i];
+        if(!steer_wheel->reverse_initialized ||
+           (choose_reverse && fabsf(normal_delta) + SW_REVERSE_SELECTION_HYSTERESIS_RAD < fabsf(reverse_delta)) ||
+           (!choose_reverse && fabsf(reverse_delta) + SW_REVERSE_SELECTION_HYSTERESIS_RAD < fabsf(normal_delta))) {
+            choose_reverse = fabsf(reverse_delta) + SW_REVERSE_SELECTION_HYSTERESIS_RAD < fabsf(normal_delta);
         }
-        else
-            target_angle = reference_angles[i] + normal_delta;
+
+        steer_wheel->reverse_drive[i] = choose_reverse;
+        target_angle = reference_angles[i] +
+                       (choose_reverse ? reverse_delta : normal_delta);
+        steer_wheel->control.wheels[i].wheel_omega =
+            choose_reverse ? -original_speed : original_speed;
         target_angle = sw_wrap_pi(target_angle);
         if(target_angle > SW_STEER_SAFE_LIMIT_RAD)
             target_angle = SW_STEER_SAFE_LIMIT_RAD;
@@ -287,6 +301,7 @@ SteelWheelErrorCode steer_wheel_optimize_targets(
         steer_wheel->control.wheels[i].steer_angle = target_angle;
     }
 
+    steer_wheel->reverse_initialized = true;
     return sw.OK;
 }
 
@@ -344,6 +359,14 @@ static float sw_wrap_pi(float angle) {
         angle += SW_2PI;
     }
     return angle;
+}
+
+/**
+ * @brief 计算目标角相对参考角的有界角差
+ * @note 返回 [-pi, pi]，避免经过多次旋转后参考角累计导致方向翻转
+ */
+static float sw_angle_delta(float target, float reference) {
+    return sw_wrap_pi(sw_wrap_pi(target) - sw_wrap_pi(reference));
 }
 
 static bool sw_model_valid(const SteerWheelModel* model) {
