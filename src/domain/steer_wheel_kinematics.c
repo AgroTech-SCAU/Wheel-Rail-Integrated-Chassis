@@ -227,6 +227,55 @@ SteelWheelErrorCode steer_wheel_apply_legacy_57_correction(SteerWheel* steer_whe
 }
 
 /**
+ * @brief 根据参考舵角选择转动距离最短的等效舵轮目标
+ * @param steer_wheel 舵轮运动学实例指针
+ * @param reference_angles 四个舵轮参考角 单位 rad
+ * @return SteelWheelErrorCode 错误码
+ */
+SteelWheelErrorCode steer_wheel_optimize_targets(
+    SteerWheel* steer_wheel, const float reference_angles[4]) {
+    uint8_t i;
+
+    if(steer_wheel == NULL || reference_angles == NULL)
+        return sw.INVALID_PARAM;
+    if(steer_wheel->initialized == false)
+        return sw.NOT_INITIALIZE;
+
+    for(i = 0u; i < 4u; ++i) {
+        float target_angle;
+        float angle_delta;
+
+        if(!isfinite(reference_angles[i]) ||
+           !isfinite(steer_wheel->control.wheels[i].wheel_omega) ||
+           !isfinite(steer_wheel->control.wheels[i].steer_angle))
+            return sw.INVALID_PARAM;
+
+        if(fabsf(steer_wheel->control.wheels[i].wheel_omega) <= SW_EPS) {
+            steer_wheel->control.wheels[i].wheel_omega = 0.0f;
+            steer_wheel->control.wheels[i].steer_angle =
+                sw_wrap_pi(reference_angles[i]);
+            continue;
+        }
+
+        target_angle = sw_wrap_pi(steer_wheel->control.wheels[i].steer_angle);
+        angle_delta = sw_wrap_pi(target_angle - reference_angles[i]);
+        if(angle_delta > SW_HALF_PI) {
+            target_angle = sw_wrap_pi(target_angle - SW_PI);
+            steer_wheel->control.wheels[i].wheel_omega =
+                -steer_wheel->control.wheels[i].wheel_omega;
+        }
+        else if(angle_delta < -SW_HALF_PI) {
+            target_angle = sw_wrap_pi(target_angle + SW_PI);
+            steer_wheel->control.wheels[i].wheel_omega =
+                -steer_wheel->control.wheels[i].wheel_omega;
+        }
+        steer_wheel->control.wheels[i].steer_angle = target_angle;
+    }
+
+    return sw.OK;
+}
+
+/**
  * @brief 舵轮运动学错误码转字符串
  * @param status 错误码
  * @return const char* 错误码字符串

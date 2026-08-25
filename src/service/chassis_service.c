@@ -73,6 +73,7 @@ typedef struct {
     volatile bool drive_frame_pending;
     uint8_t drive_ids[BENMO_DRIVE_MOTOR_COUNT];
     uint8_t steer_ids[BENMO_DRIVE_MOTOR_COUNT];
+    float last_steer_target[BENMO_DRIVE_MOTOR_COUNT];
     uint32_t last_update_ms;
     uint32_t last_log_ms;
     uint8_t consecutive_send_failures;
@@ -498,21 +499,37 @@ ChassisServiceStatus chassis_service_update(void) {
         chassis_latch_fault(CHASSIS_FAULT_KINEMATICS);
         return CHASSIS_SERVICE_STATUS_KINEMATICS_ERROR;
     }
+    if(steer_wheel_optimize_targets(&s_chassis.kinematics,
+                                    s_chassis.last_steer_target) !=
+       STEER_WHEEL_OK) {
+        chassis_latch_fault(CHASSIS_FAULT_KINEMATICS);
+        return CHASSIS_SERVICE_STATUS_KINEMATICS_ERROR;
+    }
 
     for(i = 0u; i < BENMO_DRIVE_MOTOR_COUNT; ++i) {
         int16_t rpm = (int16_t)(s_chassis.kinematics.control.wheels[i].wheel_omega *
                                 CHASSIS_RAD_S_TO_RPM);
+        bool steer_send_ok;
         (void)benmo_drive_motor_set_target_rpm(&s_chassis.drive,
                                                s_chassis.drive_ids[i], rpm);
-        if(rs06_steer_motor_set_mode(&s_chassis.steer, s_chassis.steer_ids[i],
-                                     RS06_STEER_MODE_PP) != RS06_STEER_STATUS_OK ||
-           rs06_steer_motor_enable(&s_chassis.steer, s_chassis.steer_ids[i]) !=
-               RS06_STEER_STATUS_OK ||
-           rs06_steer_motor_set_position_target(
-               &s_chassis.steer, s_chassis.steer_ids[i],
-               s_chassis.kinematics.control.wheels[i].steer_angle) !=
-               RS06_STEER_STATUS_OK) {
+        steer_send_ok =
+            rs06_steer_motor_set_mode(&s_chassis.steer,
+                                      s_chassis.steer_ids[i],
+                                      RS06_STEER_MODE_PP) ==
+                RS06_STEER_STATUS_OK &&
+            rs06_steer_motor_enable(&s_chassis.steer,
+                                    s_chassis.steer_ids[i]) ==
+                RS06_STEER_STATUS_OK &&
+            rs06_steer_motor_set_position_target(
+                &s_chassis.steer, s_chassis.steer_ids[i],
+                s_chassis.kinematics.control.wheels[i].steer_angle) ==
+                RS06_STEER_STATUS_OK;
+        if(!steer_send_ok) {
             steer_sends_ok = false;
+        }
+        else {
+            s_chassis.last_steer_target[i] =
+                s_chassis.kinematics.control.wheels[i].steer_angle;
         }
     }
     if(benmo_drive_motor_update(&s_chassis.drive) != BENMO_DRIVE_STATUS_OK ||

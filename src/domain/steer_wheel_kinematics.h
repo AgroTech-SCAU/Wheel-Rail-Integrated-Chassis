@@ -146,6 +146,14 @@ SteelWheelErrorCode steer_wheel_init(SteerWheel* steer_wheel, SteerWheelModel mo
 SteelWheelErrorCode steer_wheel_fk(SteerWheel* steer_wheel);
 SteelWheelErrorCode steer_wheel_ik(SteerWheel* steer_wheel);
 SteelWheelErrorCode steer_wheel_apply_legacy_57_correction(SteerWheel* steer_wheel);
+/**
+ * @brief 根据参考舵角选择转动距离最短的等效舵轮目标
+ * @param steer_wheel 舵轮运动学实例指针
+ * @param reference_angles 四个舵轮参考角 单位 rad
+ * @return SteelWheelErrorCode 错误码
+ */
+SteelWheelErrorCode steer_wheel_optimize_targets(
+    SteerWheel* steer_wheel, const float reference_angles[4]);
 const char* steer_wheel_error_code_to_str(SteelWheelErrorCode status);
 
 #endif
