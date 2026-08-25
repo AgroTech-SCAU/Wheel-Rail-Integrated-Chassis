@@ -17,7 +17,7 @@
 #define SW_2PI (2.0f * SW_PI)
 #define SW_HALF_PI (0.5f * SW_PI)
 #define SW_EPS 1e-6f
-#define SW_STEER_SAFE_LIMIT_RAD 3.09159265f
+#define SW_STEER_SAFE_LIMIT_RAD 3.0f
 #define SW_REVERSE_SELECTION_HYSTERESIS_RAD 0.03f
 
 /**
