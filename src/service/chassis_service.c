@@ -597,6 +597,7 @@ ChassisServiceStatus chassis_service_fault_clear(void) {
                                                 0.0f) != RS06_STEER_STATUS_OK) {
             return CHASSIS_SERVICE_STATUS_DEVICE_ERROR;
         }
+        s_chassis.last_steer_target[i] = 0.0f;
     }
     (void)benmo_drive_motor_reset_feedback_monitor(&s_chassis.drive);
     s_chassis.consecutive_send_failures = 0u;

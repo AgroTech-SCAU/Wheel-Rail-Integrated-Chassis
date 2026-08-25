@@ -244,7 +244,8 @@ SteelWheelErrorCode steer_wheel_optimize_targets(
 
     for(i = 0u; i < 4u; ++i) {
         float target_angle;
-        float angle_delta;
+        float normal_delta;
+        float reverse_delta;
 
         if(!isfinite(reference_angles[i]) ||
            !isfinite(steer_wheel->control.wheels[i].wheel_omega) ||
@@ -259,17 +260,16 @@ SteelWheelErrorCode steer_wheel_optimize_targets(
         }
 
         target_angle = sw_wrap_pi(steer_wheel->control.wheels[i].steer_angle);
-        angle_delta = sw_wrap_pi(target_angle - reference_angles[i]);
-        if(angle_delta > SW_HALF_PI) {
-            target_angle = sw_wrap_pi(target_angle - SW_PI);
+        normal_delta = sw_wrap_pi(target_angle - reference_angles[i]);
+        reverse_delta =
+            sw_wrap_pi(target_angle + SW_PI - reference_angles[i]);
+        if(fabsf(reverse_delta) < fabsf(normal_delta)) {
+            target_angle = reference_angles[i] + reverse_delta;
             steer_wheel->control.wheels[i].wheel_omega =
                 -steer_wheel->control.wheels[i].wheel_omega;
         }
-        else if(angle_delta < -SW_HALF_PI) {
-            target_angle = sw_wrap_pi(target_angle + SW_PI);
-            steer_wheel->control.wheels[i].wheel_omega =
-                -steer_wheel->control.wheels[i].wheel_omega;
-        }
+        else
+            target_angle = reference_angles[i] + normal_delta;
         steer_wheel->control.wheels[i].steer_angle = target_angle;
     }
 
