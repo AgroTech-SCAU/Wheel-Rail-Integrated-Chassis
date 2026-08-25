@@ -5,6 +5,8 @@
 
 #include "entry.h"
 
+#include "main.h" // IWYU pragma: keep
+
 #include "chassis_service.h"
 
 // ! ========================= 接 口 函 数 实 现 ========================= ! //
@@ -13,6 +15,8 @@
  * @brief 初始化底盘应用
  */
 void entry_init(void) {
+    HAL_Delay(1000);
+
     (void)chassis_service_init();
 }
 
