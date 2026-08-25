@@ -26,21 +26,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include "key.h"
-#include "motor.h"
-#include "can.h"
-#include "servo.h"
-#include "string.h"
-#include <stdio.h>
-#include <stdarg.h>
-#include <stdlib.h>
-#include <math.h>
-#include "swerve_chassis.h"
-#include "steer_wheel_kine.h"
-#include "remote_chassis.h"
-#include "FS-IA10B.h"
-// #include "BlueSerial.h"
-#include "log.h"
+#include "entry.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -61,10 +47,7 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
-extern reporter Motor_Reporter_Data;
-extern uint8_t query_id;
-extern reporter Motor_Reporter_Cache[MOTOR_DRIVE_COUNT];
-SwerveChassis chassis; //注册实例电机
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -76,125 +59,6 @@ static void MPU_Config(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-
-/* ================================================================
- * 日志输出端口：USART1 阻塞发送
- * ================================================================ */
-static bool board_log_write(const char* data, uint32_t len)
-{
-    return HAL_UART_Transmit(&huart1, (uint8_t*)data, (uint16_t)len, HAL_MAX_DELAY) == HAL_OK;
-}
-
-static const LogPortOps log_ops = {
-    .write = board_log_write,
-};
-
-#define CHASSIS_COMMAND_LOG_PERIOD_MS 500U
-
-/*
- * 周期打印遥控器最终写入底盘的速度指令。
- * 使用千分量整数避免 newlib-nano 未启用浮点 printf 时无法显示 %f。
- */
-static void Log_Chassis_Command(const SwerveChassis* chassis)
-{
-    static uint32_t last_log_tick = 0U;
-    uint32_t now_tick;
-    int32_t vx_x1000;
-    int32_t vy_x1000;
-    int32_t wz_x1000;
-
-    if(chassis == NULL)
-    {
-        return;
-    }
-
-    now_tick = HAL_GetTick();
-    if((uint32_t)(now_tick - last_log_tick) < CHASSIS_COMMAND_LOG_PERIOD_MS)
-    {
-        return;
-    }
-    last_log_tick = now_tick;
-
-    vx_x1000 = (int32_t)(chassis->kine.control.vx * 1000.0f);
-    vy_x1000 = (int32_t)(chassis->kine.control.vy * 1000.0f);
-    wz_x1000 = (int32_t)(chassis->kine.control.wz * 1000.0f);
-
-    log_info("[遥控指令 x1000] vx=%ld vy=%ld wz=%ld",
-             (long)vx_x1000,
-             (long)vy_x1000,
-             (long)wz_x1000);
-}
-
-/* ================================================================
- * 初始化配置打印（仅在启动时调用一次）
- *
- * 打印内容包括：
- *   - 系统主控与时钟
- *   - CAN 总线配置与使能状态
- *   - 4 路驱动电机 (ID 1~4) 配置详情
- *   - 4 路舵向电机 (ID 5~8) 配置详情
- *   - 底盘物理参数
- *   - 遥控器接收机与调试串口
- * ================================================================ */
-static void Log_Init_ConfigReport(const SwerveChassis* chassis)
-{
-    log_info("============================================");
-    log_info("  轮轨复合底盘 - 上电初始化配置报告");
-    log_info("============================================");
-
-    /* ---------- 1. 系统主控 ---------- */
-    log_info("[系统] MCU 型号: STM32H723VGT6 (Cortex-M7, LQFP100)");
-    log_info("[系统] 主频: 200 MHz (HSI 64MHz /4*12/1 = 192MHz→PLL→200MHz)");
-    log_info("[系统] 内核供电: LDO, VOS 电压缩放等级 1");
-    log_info("[系统] MPU: 已配置 (Region0, 4GB 背景区域)");
-
-    /* ---------- 2. CAN 总线 ---------- */
-    log_info("[CAN] FDCAN1 (驱动电机总线): 500 kbit/s");
-    log_info("[CAN]   引脚: PD0=FDCAN1_RX, PD1=FDCAN1_TX");
-    log_info("[CAN] FDCAN2 (舵向电机总线): 1 Mbit/s");
-    log_info("[CAN]   引脚: PB5=FDCAN2_RX, PB6=FDCAN2_TX");
-    log_info("[CAN] CAN1_EN (PC13): GPIO 输出高电平");
-    log_info("[CAN] CAN2_EN (PC14): GPIO 输出高电平");
-    log_info("[CAN] 全局滤波器: 双 FIFO0 全部接收, 拒绝远程帧");
-
-    /* ---------- 3. 驱动电机 (ID 1~4) ---------- */
-    log_info("[驱动] 数量: 4 台, 总线 FDCAN1, 通信帧 ID=0x032 (标准帧)");
-    log_info("[驱动] ID=1 (FL 前左): 方向正向, 平滑斜坡 5.0 RPM/step");
-    log_info("[驱动] ID=2 (FR 前右): 方向正向, 平滑斜坡 5.0 RPM/step");
-    log_info("[驱动] ID=3 (RR 后右): 方向反向 (软件取反), 平滑斜坡 5.0 RPM/step");
-    log_info("[驱动] ID=4 (RL 后左): 方向反向 (软件取反), 平滑斜坡 5.0 RPM/step");
-    log_info("[驱动] 急停接口: Motor_Stop_Immediately() 清零目标+当前转速");
-
-    /* ---------- 4. 舵向电机 (ID 5~8, RS06 协议) ---------- */
-    log_info("[舵向] 数量: 4 台, 总线 FDCAN2, 通信帧=29位扩展帧 (RS06 协议)");
-    log_info("[舵向] 主机 ID: 0x%02X, 角度限幅: %.2f ~ %.2f rad", RS06_HOST_ID, (double)RS06_P_MIN, (double)RS06_P_MAX);
-    log_info("[舵向] ID=5 (FL 前左), ID=6 (FR 前右), ID=7 (RR 后右), ID=8 (RL 后左)");
-    log_info("[舵向] 方向: ID=5/7 在 wz 旋转时额外 +90° 偏移并取反 wz");
-    log_info("[舵向] 归零与保存: RS06_Zeroing_And_Save_Process() 可用");
-
-    /* ---------- 5. 底盘物理参数 ---------- */
-    log_info("[底盘] 前后轴距 (length): %.3f m", (double)chassis->model.length);
-    log_info("[底盘] 左右轮距 (width):  %.3f m", (double)chassis->model.width);
-    log_info("[底盘] 轮子半径 (radius): %.4f m", (double)chassis->model.wheel_radius);
-    log_info("[底盘] 单轮最大线速度:    %.2f m/s", (double)chassis->model.max_wheel_linear_speed);
-    log_info("[底盘] 解算方式: 四轮独立逆运动学 (IK) → wheel_omega + steer_angle");
-
-    /* ---------- 6. 遥控器接收机 ---------- */
-    log_info("[遥控] 接收机型号: FS-iA10B (iBUS 协议)");
-    log_info("[遥控] 接口: UART5 (PD2=RX, PB13=TX, 单字节中断接收), 115200-8-N-1");
-    log_info("[遥控] 通道数: 14 ch, 速度使能条件 VRB <= %u", REMOTE_VRB_ENABLE_THRESHOLD);
-    log_info("[遥控] RC 离线保护: 仅发送零速, 不断电机使能");
-
-    /* ---------- 7. 调试与状态输出 ---------- */
-    log_info("[调试] 日志输出: USART1 (PA9=TX), 9600-8-N-1");
-    log_info("[调试] 日志级别: INFO (ERROR+WARN+INFO 均输出)");
-    log_info("[调试] ANSI 彩色: 启用 (错误红/警告黄/信息蓝)");
-    log_info("[调试] USART1 蓝牙串口 (BlueSerial): 当前已禁用");
-
-    log_info("============================================");
-    log_info("  初始化配置打印完成, 进入主循环");
-    log_info("============================================");
-}
 
 /* USER CODE END 0 */
 
@@ -239,58 +103,17 @@ int main(void)
   MX_FDCAN2_Init();
   MX_TIM15_Init();
   /* USER CODE BEGIN 2 */
-    //舵轮底盘物理参数
-    HAL_GPIO_WritePin(GPIOC,GPIO_PIN_15, GPIO_PIN_SET);
-    Swerve_Chassis_Model_Init(
-        &chassis,
-
-        0.725f,     // 前后轴距 m
-        0.730f,     // 左右轮距 m
-        0.0215f,    // 轮子半径 m
-        0.45f       // 单轮最大线速度
-    );
-/* 初始化本末驱动电机、FDCAN1，并启动 TIM6 10 ms 平滑控制中断 */
-Motor_Driver_Init();
-/* 初始化舵轮底盘 */
-Swerve_Chassis_Init(&chassis);
-
-/* FS-IA10B 初始化，内部已经开启 UART5 RX 中断 */
-ibus_init();
-
-/* 初始化日志模块（USART1 输出） */
-{
-    LogConfig log_config = {
-        .ops = &log_ops,
-        .level = LOG_LEVEL_INFO,
-        .enable_color = true,
-        .async_write = false,
-    };
-    log_init(&log_config);
-}
-// Motor_Speed_Control_Smooth(50,1);
-/* 上电初始化配置报告：只打印代码中可以确定的静态配置（仅此一次） */
-Log_Init_ConfigReport(&chassis);
-
+  entry_init();
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-  while(1) {
-     /* 维持 IBUS 接收 */
-    Remote_Chassis_Update(&chassis);
-
-    /* 周期打印遥控器最终写入的 vx、vy、wz，不参与控制计算 */
-    Log_Chassis_Command(&chassis);
-    /*
-     * 调用你的舵轮底盘解算和电机输出
-     */
-    Swerve_Chassis_Update(&chassis);
-
-    HAL_Delay(10);
+  while (1)
+  {
     /* USER CODE END WHILE */
-
     /* USER CODE BEGIN 3 */
-    }
+    entry_loop();
+  }
   /* USER CODE END 3 */
 }
 
@@ -354,15 +177,7 @@ void SystemClock_Config(void)
 }
 
 /* USER CODE BEGIN 4 */
-void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
-{
-    ibus_rx_complete_callback(huart);
-}
 
-void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
-{
-    ibus_error_callback(huart);
-}
 /* USER CODE END 4 */
 
  /* MPU Configuration */
@@ -402,9 +217,10 @@ void Error_Handler(void)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
   /* User can add his own implementation to report the HAL error return state */
-    __disable_irq();
-    while(1) {
-    }
+  __disable_irq();
+  while (1)
+  {
+  }
   /* USER CODE END Error_Handler_Debug */
 }
 #ifdef USE_FULL_ASSERT

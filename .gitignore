@@ -1,15 +1,16 @@
-# dot files
-/.vscode/launch.json
-/.settings
-/.eide/log
-/.eide.usr.ctx.json
+.settings/
+build/
 
-# project out
-/build
-/bin
-/obj
-/out
+Core/*
+!Core/Src/
+Core/Src/*
+!Core/Src/main.c
 
-# eide template
-*.ept
-*.eide-template
+docs/
+Drivers/
+
+.cproject
+.mxproject
+.project
+STM32H723VGTX_FLASH.ld
+STM32H723VGTX_RAM.ld

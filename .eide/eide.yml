@@ -1,11 +1,12 @@
 version: "4.1"
-name: mov_motor_code
+name: wheel_rail
 type: ARM
 deviceName: null
 packDir: null
 srcDirs:
   - Core
   - Drivers
+  - src
 virtualFolder:
   name: <virtual_root>
   files: []
@@ -13,7 +14,7 @@ virtualFolder:
 dependenceList: []
 outDir: build
 miscInfo:
-  uid: 84f4d460cefffbb4a4aca5133fb20f4f
+  uid: 14d9dcc20fbae725b63f515f88904aff
 targets:
   Debug:
     cppPreprocessAttrs:
@@ -28,11 +29,12 @@ targets:
         - Drivers/STM32H7xx_HAL_Driver/Inc/Legacy
         - Drivers/CMSIS/Device/ST/STM32H7xx/Include
         - Drivers/CMSIS/Include
-        - Core/APP/infra
-        - Core/APP/BlueTooth
-        - Core/APP/FS-IA10B
-        - Core/APP/motor
-        - Core/API
+        - src/app
+        - src/device
+        - src/domain
+        - src/infra
+        - src/platform
+        - src/service
       libList: []
     excludeList: []
     settings: {}
@@ -49,8 +51,6 @@ targets:
             ASM_FLAGS: -DDEBUG
           beforeBuildTasks: []
           c/cpp-compiler:
-            CXX_FLAGS: ""
-            C_FLAGS: ""
             language-c: c11
             language-cpp: c++11
             one-elf-section-per-data: true
@@ -59,17 +59,18 @@ targets:
             warnings: all-warnings
           global:
             $float-abi-type: hard
-            misc-control: []
+            arm-thumb-mode: thumb
             not-use-syscalls: true
             output-debug-info: enable
             use-newlib-nano: true
           linker:
             $outputTaskExcludes:
               - .bin
-            LD_FLAGS: ""
-            LIB_FLAGS: ""
+            $toolName: auto
             output-format: elf
             remove-unused-input-sections: true
+            use-float-printf: true
+            use-float-scanf: true
         scatterFilePath: STM32H723VGTX_FLASH.ld
         storageLayout:
           RAM: []
@@ -103,6 +104,12 @@ targets:
         - Drivers/STM32H7xx_HAL_Driver/Inc/Legacy
         - Drivers/CMSIS/Device/ST/STM32H7xx/Include
         - Drivers/CMSIS/Include
+        - src/app
+        - src/device
+        - src/domain
+        - src/infra
+        - src/platform
+        - src/service
       libList: []
     excludeList: []
     settings: {}
@@ -140,6 +147,8 @@ targets:
             LIB_FLAGS: ""
             output-format: elf
             remove-unused-input-sections: true
+            use-float-printf: true
+            use-float-scanf: true
         scatterFilePath: STM32H723VGTX_FLASH.ld
         storageLayout:
           RAM: []
@@ -155,9 +164,4 @@ targets:
         otherCmds: ""
         proType: 1
         speed: 8000
-      OpenOCD:
-        baseAddr: "0x08000000"
-        bin: ""
-        interface: cmsis-dap
-        target: stm32h7x
-    uploader: OpenOCD
+    uploader: JLink
