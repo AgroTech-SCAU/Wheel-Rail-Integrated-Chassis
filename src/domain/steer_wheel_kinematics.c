@@ -147,8 +147,7 @@ SteelWheelErrorCode steer_wheel_ik(SteerWheel* steer_wheel) {
 
     for(uint8_t i = 0; i < 4; ++i) {
         const float vix = vx - wz * y[i];
-        const float wheel_vy = (i == 1u || i == 3u) ? -vy : vy;
-        const float viy = wheel_vy + wz * x[i];
+        const float viy = vy + wz * x[i];
 
         float target_linear_speed = sqrtf(vix * vix + viy * viy);
         float target_steer_angle;
