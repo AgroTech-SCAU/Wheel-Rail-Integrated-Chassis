@@ -14,9 +14,11 @@
 #define RS06_STEER_HOST_ID            0xFDu
 #define RS06_STEER_MODE_MIT           0u
 #define RS06_STEER_MODE_PP            1u
+#define RS06_STEER_MODE_VELOCITY      2u
 #define RS06_STEER_MODE_CSP           5u
 #define RS06_STEER_POSITION_MIN_RAD   (-12.57f)
 #define RS06_STEER_POSITION_MAX_RAD   12.57f
+#define RS06_STEER_SAFE_POSITION_RAD  3.09159265f
 #define RS06_STEER_VELOCITY_MIN_RAD_S (-50.0f)
 #define RS06_STEER_VELOCITY_MAX_RAD_S 50.0f
 #define RS06_STEER_KP_MIN             0.0f
@@ -32,7 +34,16 @@ typedef enum {
     RS06_STEER_STATUS_INVALID_PARAM,
     RS06_STEER_STATUS_NOT_INITIALIZED,
     RS06_STEER_STATUS_PORT_ERROR,
+    RS06_STEER_STATUS_UNSUPPORTED_FRAME,
 } Rs06SteerMotorStatus;
+
+typedef struct {
+    uint8_t motor_id;
+    float angle_rad;
+    float velocity_rad_s;
+    float torque_nm;
+    float temperature_c;
+} Rs06SteerMotorFeedback;
 
 /**
  * @brief RS06 平台能力接口
@@ -95,6 +106,34 @@ Rs06SteerMotorStatus rs06_steer_motor_set_mode(Rs06SteerMotor* self,
 Rs06SteerMotorStatus rs06_steer_motor_set_position_target(Rs06SteerMotor* self,
                                                           uint8_t motor_id,
                                                           float angle_rad);
+Rs06SteerMotorStatus rs06_steer_motor_set_raw_position_target(
+    Rs06SteerMotor* self, uint8_t motor_id, float angle_rad);
+/**
+ * @brief 设置速度模式目标速度
+ */
+Rs06SteerMotorStatus rs06_steer_motor_set_velocity_target(Rs06SteerMotor* self,
+                                                          uint8_t motor_id,
+                                                          float speed_rad_s);
+/**
+ * @brief 停止电机，写入无冲击 PP 目标后重新使能
+ */
+Rs06SteerMotorStatus rs06_steer_motor_prepare_pp(Rs06SteerMotor* self,
+                                                 uint8_t motor_id,
+                                                 float current_angle_rad);
+Rs06SteerMotorStatus rs06_steer_motor_prepare_pp_raw(Rs06SteerMotor* self,
+                                                     uint8_t motor_id,
+                                                     float current_angle_rad);
+/**
+ * @brief 停止电机，清零速度目标后进入并使能速度模式
+ */
+Rs06SteerMotorStatus rs06_steer_motor_prepare_velocity(Rs06SteerMotor* self,
+                                                       uint8_t motor_id);
+/**
+ * @brief 解析私有扩展帧协议的通信类型 2 电机反馈
+ */
+Rs06SteerMotorStatus rs06_steer_motor_parse_feedback(
+    const Rs06SteerMotor* self, uint32_t extended_id, const uint8_t* data,
+    uint8_t len, Rs06SteerMotorFeedback* out);
 /**
  * @brief 设置 MIT 模式位置控制参数
  */

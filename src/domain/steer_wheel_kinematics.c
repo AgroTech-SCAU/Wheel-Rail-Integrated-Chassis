@@ -17,6 +17,7 @@
 #define SW_2PI (2.0f * SW_PI)
 #define SW_HALF_PI (0.5f * SW_PI)
 #define SW_EPS 1e-6f
+#define SW_STEER_SAFE_LIMIT_RAD 3.09159265f
 
 /**
  * @brief 舵轮运动学入口单例定义表
@@ -256,6 +257,14 @@ SteelWheelErrorCode steer_wheel_optimize_targets(
             steer_wheel->control.wheels[i].wheel_omega = 0.0f;
             steer_wheel->control.wheels[i].steer_angle =
                 sw_wrap_pi(reference_angles[i]);
+            if(steer_wheel->control.wheels[i].steer_angle >
+               SW_STEER_SAFE_LIMIT_RAD)
+                steer_wheel->control.wheels[i].steer_angle =
+                    SW_STEER_SAFE_LIMIT_RAD;
+            else if(steer_wheel->control.wheels[i].steer_angle <
+                    -SW_STEER_SAFE_LIMIT_RAD)
+                steer_wheel->control.wheels[i].steer_angle =
+                    -SW_STEER_SAFE_LIMIT_RAD;
             continue;
         }
 
@@ -270,6 +279,11 @@ SteelWheelErrorCode steer_wheel_optimize_targets(
         }
         else
             target_angle = reference_angles[i] + normal_delta;
+        target_angle = sw_wrap_pi(target_angle);
+        if(target_angle > SW_STEER_SAFE_LIMIT_RAD)
+            target_angle = SW_STEER_SAFE_LIMIT_RAD;
+        else if(target_angle < -SW_STEER_SAFE_LIMIT_RAD)
+            target_angle = -SW_STEER_SAFE_LIMIT_RAD;
         steer_wheel->control.wheels[i].steer_angle = target_angle;
     }
 

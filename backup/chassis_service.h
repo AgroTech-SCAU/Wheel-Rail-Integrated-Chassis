@@ -33,8 +33,6 @@ typedef enum {
     CHASSIS_FAULT_INITIALIZATION,
     CHASSIS_FAULT_DRIVE_TRANSMIT,
     CHASSIS_FAULT_STEER_TRANSMIT,
-    CHASSIS_FAULT_STEER_FEEDBACK_TIMEOUT,
-    CHASSIS_FAULT_STEER_ANGLE_LIMIT,
     CHASSIS_FAULT_DRIVE_FEEDBACK_TIMEOUT,
     CHASSIS_FAULT_KINEMATICS,
     CHASSIS_FAULT_MANUAL_STOP,
@@ -83,6 +81,14 @@ ChassisServiceStatus chassis_service_fault_clear(void);
  * @return ChassisServiceStatus 状态码
  */
 ChassisServiceStatus chassis_service_get_state(ChassisServiceState* out);
+/**
+ * @brief 注入单个舵向电机角度反馈（单位 rad）
+ * @param motor_id 舵向电机节点 ID（5~8）
+ * @param angle_rad 当前角度反馈
+ * @return ChassisServiceStatus 状态码
+ */
+ChassisServiceStatus chassis_service_on_steer_feedback(uint8_t motor_id,
+                                                       float angle_rad);
 /**
  * @brief 将服务状态码转换为静态字符串
  */

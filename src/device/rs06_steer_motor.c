@@ -19,7 +19,13 @@
 #define RS06_TYPE_WRITE_PARAM 0x1200u
 #define RS06_TYPE_SAVE 0x1600u
 #define RS06_PARAM_RUN_MODE 0x7005u
+#define RS06_PARAM_VELOCITY_REFERENCE 0x700Au
 #define RS06_PARAM_POSITION_REFERENCE 0x7016u
+#define RS06_TYPE_FEEDBACK 0x02u
+
+static Rs06SteerMotorStatus rs06_send(Rs06SteerMotor* self, uint32_t type,
+                                      uint8_t host_id, uint8_t motor_id,
+                                      const uint8_t data[8]);
 
 // ! ========================= 私 有 函 数 实 现 ========================= ! //
 
@@ -52,6 +58,25 @@ static uint16_t rs06_float_to_uint(float value, float minimum, float maximum,
         offset = span;
     }
     return (uint16_t)((offset / span) * (float)((1ul << bits) - 1ul));
+}
+
+static float rs06_uint_to_float(uint16_t value, float minimum, float maximum) {
+    return ((float)value * (maximum - minimum) / 65535.0f) + minimum;
+}
+
+static Rs06SteerMotorStatus rs06_write_float_param(Rs06SteerMotor* self,
+                                                   uint8_t motor_id,
+                                                   uint16_t index,
+                                                   float value) {
+    uint8_t data[8] = { 0u };
+    if(!isfinite(value)) {
+        return RS06_STEER_STATUS_INVALID_PARAM;
+    }
+    data[0] = (uint8_t)index;
+    data[1] = (uint8_t)(index >> 8u);
+    memcpy(&data[4], &value, sizeof(value));
+    return rs06_send(self, RS06_TYPE_WRITE_PARAM,
+                     self != NULL ? self->host_id : 0u, motor_id, data);
 }
 
 /**
@@ -143,6 +168,7 @@ Rs06SteerMotorStatus rs06_steer_motor_set_mode(Rs06SteerMotor* self,
                                                uint8_t motor_id, uint8_t mode) {
     uint8_t data[8] = { 0u };
     if(mode != RS06_STEER_MODE_MIT && mode != RS06_STEER_MODE_PP &&
+       mode != RS06_STEER_MODE_VELOCITY &&
        mode != RS06_STEER_MODE_CSP) {
         return RS06_STEER_STATUS_INVALID_PARAM;
     }
@@ -156,7 +182,15 @@ Rs06SteerMotorStatus rs06_steer_motor_set_mode(Rs06SteerMotor* self,
 Rs06SteerMotorStatus rs06_steer_motor_set_position_target(Rs06SteerMotor* self,
                                                           uint8_t motor_id,
                                                           float angle_rad) {
-    uint8_t data[8] = { 0u };
+    if(!isfinite(angle_rad) || angle_rad < -RS06_STEER_SAFE_POSITION_RAD ||
+       angle_rad > RS06_STEER_SAFE_POSITION_RAD) {
+        return RS06_STEER_STATUS_INVALID_PARAM;
+    }
+    return rs06_steer_motor_set_raw_position_target(self, motor_id, angle_rad);
+}
+
+Rs06SteerMotorStatus rs06_steer_motor_set_raw_position_target(
+    Rs06SteerMotor* self, uint8_t motor_id, float angle_rad) {
     if(!isfinite(angle_rad) || angle_rad < RS06_STEER_POSITION_MIN_RAD ||
        angle_rad > RS06_STEER_POSITION_MAX_RAD) {
         return RS06_STEER_STATUS_INVALID_PARAM;
@@ -164,11 +198,127 @@ Rs06SteerMotorStatus rs06_steer_motor_set_position_target(Rs06SteerMotor* self,
     if(motor_id == 5u || motor_id == 7u) {
         angle_rad = -angle_rad;
     }
-    data[0] = (uint8_t)RS06_PARAM_POSITION_REFERENCE;
-    data[1] = (uint8_t)(RS06_PARAM_POSITION_REFERENCE >> 8u);
-    memcpy(&data[4], &angle_rad, sizeof(angle_rad));
-    return rs06_send(self, RS06_TYPE_WRITE_PARAM,
-                     self != NULL ? self->host_id : 0u, motor_id, data);
+    return rs06_write_float_param(self, motor_id, RS06_PARAM_POSITION_REFERENCE,
+                                  angle_rad);
+}
+
+Rs06SteerMotorStatus rs06_steer_motor_set_velocity_target(Rs06SteerMotor* self,
+                                                          uint8_t motor_id,
+                                                          float speed_rad_s) {
+    if(!isfinite(speed_rad_s) || speed_rad_s < RS06_STEER_VELOCITY_MIN_RAD_S ||
+       speed_rad_s > RS06_STEER_VELOCITY_MAX_RAD_S) {
+        return RS06_STEER_STATUS_INVALID_PARAM;
+    }
+    if(motor_id == 5u || motor_id == 7u) {
+        speed_rad_s = -speed_rad_s;
+    }
+    return rs06_write_float_param(self, motor_id, RS06_PARAM_VELOCITY_REFERENCE,
+                                  speed_rad_s);
+}
+
+Rs06SteerMotorStatus rs06_steer_motor_prepare_pp(Rs06SteerMotor* self,
+                                                 uint8_t motor_id,
+                                                 float current_angle_rad) {
+    Rs06SteerMotorStatus status;
+    status = rs06_steer_motor_set_velocity_target(self, motor_id, 0.0f);
+    if(status != RS06_STEER_STATUS_OK) {
+        return status;
+    }
+    self->ops->delay_ms(5u);
+    status = rs06_steer_motor_stop(self, motor_id);
+    if(status != RS06_STEER_STATUS_OK) {
+        return status;
+    }
+    self->ops->delay_ms(5u);
+    status = rs06_steer_motor_set_mode(self, motor_id, RS06_STEER_MODE_PP);
+    if(status != RS06_STEER_STATUS_OK) {
+        return status;
+    }
+    self->ops->delay_ms(5u);
+    status =
+        rs06_steer_motor_set_position_target(self, motor_id, current_angle_rad);
+    if(status != RS06_STEER_STATUS_OK) {
+        return status;
+    }
+    self->ops->delay_ms(5u);
+    return rs06_steer_motor_enable(self, motor_id);
+}
+
+Rs06SteerMotorStatus rs06_steer_motor_prepare_pp_raw(Rs06SteerMotor* self,
+                                                     uint8_t motor_id,
+                                                     float current_angle_rad) {
+    Rs06SteerMotorStatus status = rs06_steer_motor_stop(self, motor_id);
+    if(status != RS06_STEER_STATUS_OK) return status;
+    self->ops->delay_ms(5u);
+    status = rs06_steer_motor_set_mode(self, motor_id, RS06_STEER_MODE_PP);
+    if(status != RS06_STEER_STATUS_OK) return status;
+    self->ops->delay_ms(5u);
+    status = rs06_steer_motor_set_raw_position_target(self, motor_id,
+                                                      current_angle_rad);
+    if(status != RS06_STEER_STATUS_OK) return status;
+    self->ops->delay_ms(5u);
+    return rs06_steer_motor_enable(self, motor_id);
+}
+
+Rs06SteerMotorStatus rs06_steer_motor_prepare_velocity(Rs06SteerMotor* self,
+                                                       uint8_t motor_id) {
+    Rs06SteerMotorStatus status = rs06_steer_motor_stop(self, motor_id);
+    if(status != RS06_STEER_STATUS_OK) {
+        return status;
+    }
+    self->ops->delay_ms(5u);
+    status =
+        rs06_steer_motor_set_mode(self, motor_id, RS06_STEER_MODE_VELOCITY);
+    if(status != RS06_STEER_STATUS_OK) {
+        return status;
+    }
+    self->ops->delay_ms(5u);
+    status = rs06_steer_motor_set_velocity_target(self, motor_id, 0.0f);
+    if(status != RS06_STEER_STATUS_OK) {
+        return status;
+    }
+    self->ops->delay_ms(5u);
+    return rs06_steer_motor_enable(self, motor_id);
+}
+
+Rs06SteerMotorStatus rs06_steer_motor_parse_feedback(
+    const Rs06SteerMotor* self, uint32_t extended_id, const uint8_t* data,
+    uint8_t len, Rs06SteerMotorFeedback* out) {
+    uint8_t motor_id;
+    uint16_t angle_raw;
+    uint16_t velocity_raw;
+    uint16_t torque_raw;
+    uint16_t temperature_raw;
+    if(self == NULL || !self->initialized || data == NULL || out == NULL ||
+       len != 8u) {
+        return RS06_STEER_STATUS_INVALID_PARAM;
+    }
+    if(((extended_id >> 24u) & 0x1Fu) != RS06_TYPE_FEEDBACK ||
+       (uint8_t)extended_id != self->host_id) {
+        return RS06_STEER_STATUS_UNSUPPORTED_FRAME;
+    }
+    motor_id = (uint8_t)(extended_id >> 8u);
+    if(!rs06_motor_id_valid(motor_id)) {
+        return RS06_STEER_STATUS_INVALID_PARAM;
+    }
+    angle_raw = (uint16_t)(((uint16_t)data[0] << 8u) | data[1]);
+    velocity_raw = (uint16_t)(((uint16_t)data[2] << 8u) | data[3]);
+    torque_raw = (uint16_t)(((uint16_t)data[4] << 8u) | data[5]);
+    temperature_raw = (uint16_t)(((uint16_t)data[6] << 8u) | data[7]);
+    out->motor_id = motor_id;
+    out->angle_rad = rs06_uint_to_float(angle_raw, RS06_STEER_POSITION_MIN_RAD,
+                                        RS06_STEER_POSITION_MAX_RAD);
+    out->velocity_rad_s =
+        rs06_uint_to_float(velocity_raw, RS06_STEER_VELOCITY_MIN_RAD_S,
+                           RS06_STEER_VELOCITY_MAX_RAD_S);
+    out->torque_nm = rs06_uint_to_float(torque_raw, -36.0f, 36.0f);
+    out->temperature_c = (float)temperature_raw * 0.1f;
+    if(motor_id == 5u || motor_id == 7u) {
+        out->angle_rad = -out->angle_rad;
+        out->velocity_rad_s = -out->velocity_rad_s;
+        out->torque_nm = -out->torque_nm;
+    }
+    return RS06_STEER_STATUS_OK;
 }
 
 Rs06SteerMotorStatus
@@ -194,22 +344,22 @@ rs06_steer_motor_set_mit_position(Rs06SteerMotor* self, uint8_t motor_id,
     position = rs06_float_to_uint(angle_rad, RS06_STEER_POSITION_MIN_RAD,
                                   RS06_STEER_POSITION_MAX_RAD, 16u);
     velocity = rs06_float_to_uint(speed_rad_s, RS06_STEER_VELOCITY_MIN_RAD_S,
-                                  RS06_STEER_VELOCITY_MAX_RAD_S, 12u);
+                                  RS06_STEER_VELOCITY_MAX_RAD_S, 16u);
     kp_encoded =
-        rs06_float_to_uint(kp, RS06_STEER_KP_MIN, RS06_STEER_KP_MAX, 12u);
+        rs06_float_to_uint(kp, RS06_STEER_KP_MIN, RS06_STEER_KP_MAX, 16u);
     kd_encoded =
-        rs06_float_to_uint(kd, RS06_STEER_KD_MIN, RS06_STEER_KD_MAX, 12u);
-    torque = rs06_float_to_uint(torque_ff, -36.0f, 36.0f, 12u);
+        rs06_float_to_uint(kd, RS06_STEER_KD_MIN, RS06_STEER_KD_MAX, 16u);
+    torque = rs06_float_to_uint(torque_ff, -36.0f, 36.0f, 16u);
     data[0] = (uint8_t)(position >> 8u);
     data[1] = (uint8_t)position;
-    data[2] = (uint8_t)(velocity >> 4u);
-    data[3] =
-        (uint8_t)(((velocity & 0x0Fu) << 4u) | ((kp_encoded >> 8u) & 0x0Fu));
-    data[4] = (uint8_t)kp_encoded;
-    data[5] = (uint8_t)(kd_encoded >> 4u);
-    data[6] = (uint8_t)(((kd_encoded & 0x0Fu) << 4u) | ((torque >> 8u) & 0x0Fu));
-    data[7] = (uint8_t)torque;
-    return rs06_send(self, RS06_TYPE_RUN, self->host_id, motor_id, data);
+    data[2] = (uint8_t)(velocity >> 8u);
+    data[3] = (uint8_t)velocity;
+    data[4] = (uint8_t)(kp_encoded >> 8u);
+    data[5] = (uint8_t)kp_encoded;
+    data[6] = (uint8_t)(kd_encoded >> 8u);
+    data[7] = (uint8_t)kd_encoded;
+    return rs06_send(self, RS06_TYPE_RUN | (uint32_t)(torque >> 8u),
+                     (uint8_t)torque, motor_id, data);
 }
 
 bool rs06_steer_motor_is_initialized(const Rs06SteerMotor* self) {

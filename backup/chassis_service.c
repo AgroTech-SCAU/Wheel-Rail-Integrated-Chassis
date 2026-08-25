@@ -9,7 +9,6 @@
 #include "fs_ia10b.h"
 #include "log.h"
 #include "rs06_steer_motor.h"
-#include "steer_home_control.h"
 #include "steer_wheel_kinematics.h"
 #include "stm32_board_port.h"
 #include "stm32_fdcan_port.h"
@@ -28,17 +27,18 @@
 #define CHASSIS_MAX_WHEEL_LINEAR_SPEED_M_S 0.45f
 #define CHASSIS_UPDATE_PERIOD_MS 10u
 #define CHASSIS_REMOTE_TIMEOUT_MS 200u
-#define CHASSIS_DRIVE_FEEDBACK_TIMEOUT_MS 500u
+#define CHASSIS_DRIVE_FEEDBACK_TIMEOUT_MS 200u
 #define CHASSIS_SEND_FAILURE_LIMIT 3u
 #define CHASSIS_LOG_PERIOD_MS 500u
 #define CHASSIS_RAD_S_TO_RPM 9.5492965855f
+#define CHASSIS_PI 3.14159265358979323846f
+#define CHASSIS_2PI (2.0f * CHASSIS_PI)
 #define CHASSIS_STEER_HOME_KP 6.0f
+#define CHASSIS_STEER_HOME_KD 1.0f
 #define CHASSIS_STEER_HOME_MAX_SPEED_RAD_S 1.2f
 #define CHASSIS_STEER_HOME_DEADBAND_RAD 0.03f
 #define CHASSIS_STEER_HOME_STABLE_CYCLES 8u
 #define CHASSIS_STEER_HOME_TIMEOUT_MS 2000u
-#define CHASSIS_STEER_FEEDBACK_MAX_AGE_MS 100u
-#define CHASSIS_RAD_TO_MDEG 57295.7795131f
 
 #define REMOTE_CH_RIGHT_X 0u
 #define REMOTE_CH_RIGHT_Y 1u
@@ -69,14 +69,6 @@ typedef struct {
     float max_wz;
 } RemoteSpeedLimit;
 
-typedef enum {
-    CHASSIS_STEER_STARTUP_WAIT_FEEDBACK = 0,
-    CHASSIS_STEER_STARTUP_PREPARE_HOME,
-    CHASSIS_STEER_STARTUP_HOME,
-    CHASSIS_STEER_STARTUP_SWITCH_PP,
-    CHASSIS_STEER_STARTUP_READY,
-} ChassisSteerStartupState;
-
 /**
  * @brief 底盘服务内部运行上下文
  */
@@ -91,20 +83,9 @@ typedef struct {
     uint8_t drive_ids[BENMO_DRIVE_MOTOR_COUNT];
     uint8_t steer_ids[BENMO_DRIVE_MOTOR_COUNT];
     float last_steer_target[BENMO_DRIVE_MOTOR_COUNT];
-    volatile float pending_steer_angle[BENMO_DRIVE_MOTOR_COUNT];
-    volatile uint32_t pending_steer_feedback_ms[BENMO_DRIVE_MOTOR_COUNT];
-    volatile uint32_t pending_steer_feedback_sequence[BENMO_DRIVE_MOTOR_COUNT];
-    volatile bool pending_steer_feedback_valid[BENMO_DRIVE_MOTOR_COUNT];
     float steer_feedback_angle[BENMO_DRIVE_MOTOR_COUNT];
-    float steer_feedback_raw_angle[BENMO_DRIVE_MOTOR_COUNT];
-    uint32_t steer_feedback_ms[BENMO_DRIVE_MOTOR_COUNT];
-    uint32_t steer_feedback_sequence[BENMO_DRIVE_MOTOR_COUNT];
-    uint32_t steer_home_last_sequence[BENMO_DRIVE_MOTOR_COUNT];
     bool steer_feedback_valid[BENMO_DRIVE_MOTOR_COUNT];
-    ChassisSteerStartupState steer_startup_state;
-    uint8_t steer_startup_motor_index;
-    uint32_t steer_startup_wait_sequence;
-    bool steer_startup_waiting_feedback;
+    bool steer_home_active;
     uint8_t steer_home_stable_cycles;
     uint32_t steer_home_start_ms;
     uint32_t last_update_ms;
@@ -123,7 +104,6 @@ static bool chassis_log_write(const char* data, uint32_t len);
 static void chassis_uart_rx_complete(void* context);
 static void chassis_uart_error(void* context);
 static void chassis_drive_rx(const Stm32FdcanFrame* frame, void* context);
-static void chassis_steer_rx(const Stm32FdcanFrame* frame, void* context);
 static float chassis_limit_float(float value, float minimum, float maximum);
 static bool chassis_remote_switch_is(uint16_t value, uint16_t target);
 static float chassis_remote_channel_to_norm(uint16_t value);
@@ -132,16 +112,10 @@ static RemoteSpeedLimit chassis_remote_speed_limit(uint16_t switch_value);
 static void chassis_set_velocity(float vx, float vy, float wz);
 static void chassis_update_remote_command(void);
 static bool chassis_remote_is_safe_for_fault_clear(void);
+static float chassis_wrap_pi(float angle);
 static bool chassis_steer_id_to_index(uint8_t motor_id, uint8_t* out_index);
 static bool chassis_steer_feedback_ready(void);
-static bool chassis_steer_feedback_fresh(uint32_t now);
-static bool chassis_steer_feedback_safe(void);
-static bool chassis_take_steer_feedback_snapshot(void);
 static bool chassis_run_steer_home(uint32_t now, bool* steer_sends_ok);
-static int8_t chassis_prepare_next_steering_motor(bool velocity_mode);
-static void chassis_seed_steer_targets_from_feedback(void);
-static void chassis_log_periodic(uint32_t now);
-static void chassis_log_steer_feedback(const char* reason);
 static void chassis_send_stop_once(void);
 static void chassis_latch_fault(ChassisFault fault);
 static bool chassis_record_send_result(bool success, ChassisFault fault);
@@ -218,24 +192,6 @@ static void chassis_drive_rx(const Stm32FdcanFrame* frame, void* context) {
         self->pending_drive_frame.data[i] = frame->data[i];
     }
     self->drive_frame_pending = true;
-}
-
-static void chassis_steer_rx(const Stm32FdcanFrame* frame, void* context) {
-    ChassisServiceContext* self = (ChassisServiceContext*)context;
-    Rs06SteerMotorFeedback feedback;
-    uint8_t index;
-    if(frame == NULL || self == NULL ||
-       frame->id_type != STM32_FDCAN_ID_EXTENDED ||
-       rs06_steer_motor_parse_feedback(&self->steer, frame->id, frame->data,
-                                       frame->len, &feedback) !=
-           RS06_STEER_STATUS_OK ||
-       !chassis_steer_id_to_index(feedback.motor_id, &index)) {
-        return;
-    }
-    self->pending_steer_angle[index] = feedback.angle_rad;
-    self->pending_steer_feedback_ms[index] = stm32_time_now_ms();
-    self->pending_steer_feedback_sequence[index]++;
-    self->pending_steer_feedback_valid[index] = true;
 }
 
 static float chassis_limit_float(float value, float minimum, float maximum) {
@@ -323,6 +279,16 @@ static void chassis_update_remote_command(void) {
                              remote.channel[REMOTE_CH_LEFT_X], limit.max_wz));
 }
 
+static float chassis_wrap_pi(float angle) {
+    while(angle > CHASSIS_PI) {
+        angle -= CHASSIS_2PI;
+    }
+    while(angle <= -CHASSIS_PI) {
+        angle += CHASSIS_2PI;
+    }
+    return angle;
+}
+
 static bool chassis_steer_id_to_index(uint8_t motor_id, uint8_t* out_index) {
     uint8_t i;
     if(out_index == NULL) {
@@ -350,7 +316,6 @@ static bool chassis_steer_feedback_ready(void) {
 static bool chassis_run_steer_home(uint32_t now, bool* steer_sends_ok) {
     uint8_t i;
     uint8_t done_count = 0u;
-    bool all_samples_new = true;
     bool send_ok = true;
 
     if(steer_sends_ok == NULL) {
@@ -358,257 +323,73 @@ static bool chassis_run_steer_home(uint32_t now, bool* steer_sends_ok) {
     }
     *steer_sends_ok = true;
 
-    if((uint32_t)(now - s_chassis.steer_home_start_ms) >=
-       CHASSIS_STEER_HOME_TIMEOUT_MS) {
-        for(i = 0u; i < BENMO_DRIVE_MOTOR_COUNT; ++i) {
-            (void)rs06_steer_motor_set_velocity_target(
-                &s_chassis.steer, s_chassis.steer_ids[i], 0.0f);
-            (void)rs06_steer_motor_stop(&s_chassis.steer,
-                                        s_chassis.steer_ids[i]);
-        }
-        chassis_latch_fault(CHASSIS_FAULT_STEER_FEEDBACK_TIMEOUT);
-        *steer_sends_ok = false;
-        return false;
+    if(!s_chassis.steer_home_active) {
+        return true;
     }
-    if(!chassis_steer_feedback_fresh(now)) {
-        for(i = 0u; i < BENMO_DRIVE_MOTOR_COUNT; ++i) {
-            if(rs06_steer_motor_set_velocity_target(
-                   &s_chassis.steer, s_chassis.steer_ids[i], 0.0f) !=
-               RS06_STEER_STATUS_OK) {
-                *steer_sends_ok = false;
-            }
+
+    if(!chassis_steer_feedback_ready()) {
+        if((uint32_t)(now - s_chassis.steer_home_start_ms) >=
+           CHASSIS_STEER_HOME_TIMEOUT_MS) {
+            s_chassis.steer_home_active = false;
+            (void)log_error("steer home skipped: feedback timeout");
+            return true;
         }
         return false;
     }
 
     for(i = 0u; i < BENMO_DRIVE_MOTOR_COUNT; ++i) {
         const float feedback_angle = s_chassis.steer_feedback_angle[i];
-        if(s_chassis.steer_feedback_sequence[i] ==
-           s_chassis.steer_home_last_sequence[i]) {
-            all_samples_new = false;
+        const float error = chassis_wrap_pi(0.0f - feedback_angle);
+        float speed_cmd = CHASSIS_STEER_HOME_KP * error;
+
+        if(speed_cmd > CHASSIS_STEER_HOME_MAX_SPEED_RAD_S) {
+            speed_cmd = CHASSIS_STEER_HOME_MAX_SPEED_RAD_S;
         }
-        float speed_cmd = steer_home_speed_command(
-            feedback_angle, CHASSIS_STEER_HOME_KP,
-            CHASSIS_STEER_HOME_MAX_SPEED_RAD_S);
-        if(fabsf(speed_cmd) <=
-           CHASSIS_STEER_HOME_KP * CHASSIS_STEER_HOME_DEADBAND_RAD) {
+        else if(speed_cmd < -CHASSIS_STEER_HOME_MAX_SPEED_RAD_S) {
+            speed_cmd = -CHASSIS_STEER_HOME_MAX_SPEED_RAD_S;
+        }
+        if(fabsf(error) <= CHASSIS_STEER_HOME_DEADBAND_RAD) {
             speed_cmd = 0.0f;
             done_count++;
         }
 
-        send_ok = rs06_steer_motor_set_velocity_target(
-                      &s_chassis.steer, s_chassis.steer_ids[i], speed_cmd) ==
-                  RS06_STEER_STATUS_OK;
+        send_ok =
+            rs06_steer_motor_set_mode(&s_chassis.steer,
+                                      s_chassis.steer_ids[i],
+                                      RS06_STEER_MODE_MIT) ==
+                RS06_STEER_STATUS_OK &&
+            rs06_steer_motor_enable(&s_chassis.steer,
+                                    s_chassis.steer_ids[i]) ==
+                RS06_STEER_STATUS_OK &&
+            rs06_steer_motor_set_mit_position(
+                &s_chassis.steer, s_chassis.steer_ids[i], feedback_angle,
+                speed_cmd, 0.0f, CHASSIS_STEER_HOME_KD, 0.0f) ==
+                RS06_STEER_STATUS_OK;
         if(!send_ok) {
             *steer_sends_ok = false;
         }
     }
 
-    if(all_samples_new && done_count == BENMO_DRIVE_MOTOR_COUNT) {
+    if(done_count == BENMO_DRIVE_MOTOR_COUNT) {
         if(s_chassis.steer_home_stable_cycles < 0xFFu) {
             s_chassis.steer_home_stable_cycles++;
         }
     }
-    else if(all_samples_new) {
+    else {
         s_chassis.steer_home_stable_cycles = 0u;
     }
 
-    if(all_samples_new) {
-        for(i = 0u; i < BENMO_DRIVE_MOTOR_COUNT; ++i) {
-            s_chassis.steer_home_last_sequence[i] =
-                s_chassis.steer_feedback_sequence[i];
-        }
-    }
-
     if(s_chassis.steer_home_stable_cycles >= CHASSIS_STEER_HOME_STABLE_CYCLES) {
-        s_chassis.steer_startup_motor_index = 0u;
-        s_chassis.steer_startup_waiting_feedback = false;
-        s_chassis.steer_home_start_ms = now;
-        s_chassis.steer_startup_state = CHASSIS_STEER_STARTUP_SWITCH_PP;
+        s_chassis.steer_home_active = false;
+        for(i = 0u; i < BENMO_DRIVE_MOTOR_COUNT; ++i) {
+            s_chassis.last_steer_target[i] = 0.0f;
+            s_chassis.kinematics.state.cur_wheels[i].steer_angle = 0.0f;
+        }
+        (void)log_info("steer home done");
         return true;
     }
 
     return false;
-}
-
-static bool chassis_steer_feedback_fresh(uint32_t now) {
-    uint8_t i;
-    if(!chassis_steer_feedback_ready()) {
-        return false;
-    }
-    for(i = 0u; i < BENMO_DRIVE_MOTOR_COUNT; ++i) {
-        if(!steer_home_feedback_timestamp_is_fresh(
-               now, s_chassis.steer_feedback_ms[i],
-               CHASSIS_STEER_FEEDBACK_MAX_AGE_MS)) {
-            return false;
-        }
-    }
-    return true;
-}
-
-static bool chassis_take_steer_feedback_snapshot(void) {
-    uint32_t critical_state;
-    uint8_t i;
-    bool changed = false;
-    critical_state = stm32_critical_enter();
-    for(i = 0u; i < BENMO_DRIVE_MOTOR_COUNT; ++i) {
-        if(s_chassis.pending_steer_feedback_valid[i] &&
-           s_chassis.pending_steer_feedback_sequence[i] !=
-               s_chassis.steer_feedback_sequence[i]) {
-            s_chassis.steer_feedback_angle[i] =
-                steer_home_normalize_feedback(s_chassis.pending_steer_angle[i]);
-            s_chassis.steer_feedback_raw_angle[i] =
-                s_chassis.pending_steer_angle[i];
-            s_chassis.steer_feedback_ms[i] =
-                s_chassis.pending_steer_feedback_ms[i];
-            s_chassis.steer_feedback_sequence[i] =
-                s_chassis.pending_steer_feedback_sequence[i];
-            s_chassis.steer_feedback_valid[i] = true;
-            changed = true;
-        }
-    }
-    stm32_critical_exit(critical_state);
-    for(i = 0u; i < BENMO_DRIVE_MOTOR_COUNT; ++i) {
-        if(s_chassis.steer_feedback_valid[i]) {
-            s_chassis.kinematics.state.cur_wheels[i].steer_angle =
-                s_chassis.steer_feedback_angle[i];
-        }
-    }
-    return changed;
-}
-
-static int8_t chassis_prepare_next_steering_motor(bool velocity_mode) {
-    const uint8_t i = s_chassis.steer_startup_motor_index;
-    Rs06SteerMotorStatus status;
-
-    if(i >= BENMO_DRIVE_MOTOR_COUNT) {
-        return 1;
-    }
-    if(s_chassis.steer_startup_waiting_feedback) {
-        if(s_chassis.steer_feedback_sequence[i] ==
-           s_chassis.steer_startup_wait_sequence) {
-            return 0;
-        }
-        s_chassis.steer_startup_waiting_feedback = false;
-        s_chassis.steer_startup_motor_index++;
-        return s_chassis.steer_startup_motor_index >= BENMO_DRIVE_MOTOR_COUNT
-                   ? 1
-                   : 0;
-    }
-
-    status = velocity_mode
-                 ? rs06_steer_motor_prepare_velocity(&s_chassis.steer,
-                                                      s_chassis.steer_ids[i])
-                 : rs06_steer_motor_prepare_pp_raw(
-                       &s_chassis.steer, s_chassis.steer_ids[i],
-                       steer_home_raw_position_target(
-                           0.0f, s_chassis.steer_feedback_raw_angle[i]));
-    if(status != RS06_STEER_STATUS_OK) {
-        return -1;
-    }
-    {
-        const uint32_t critical_state = stm32_critical_enter();
-        s_chassis.steer_startup_wait_sequence =
-            s_chassis.pending_steer_feedback_sequence[i];
-        stm32_critical_exit(critical_state);
-    }
-    s_chassis.steer_startup_waiting_feedback = true;
-    return 0;
-}
-
-static void chassis_seed_steer_targets_from_feedback(void) {
-    uint8_t i;
-    if(!chassis_steer_feedback_ready()) {
-        return;
-    }
-    for(i = 0u; i < BENMO_DRIVE_MOTOR_COUNT; ++i) {
-        s_chassis.last_steer_target[i] = 0.0f;
-        s_chassis.kinematics.state.cur_wheels[i].steer_angle =
-            s_chassis.steer_feedback_angle[i];
-    }
-}
-
-static bool chassis_steer_feedback_safe(void) {
-    uint8_t i;
-    for(i = 0u; i < BENMO_DRIVE_MOTOR_COUNT; ++i) {
-        if(!s_chassis.steer_feedback_valid[i] ||
-           !steer_home_feedback_is_safe(s_chassis.steer_feedback_angle[i])) {
-            return false;
-        }
-    }
-    return true;
-}
-
-static void chassis_log_periodic(uint32_t now) {
-    if((uint32_t)(now - s_chassis.last_log_ms) < CHASSIS_LOG_PERIOD_MS) {
-        return;
-    }
-    s_chassis.last_log_ms = now;
-    chassis_log_steer_feedback("periodic");
-}
-
-static void chassis_log_steer_feedback(const char* reason) {
-    uint8_t valid_mask = 0u;
-    uint8_t i;
-    for(i = 0u; i < BENMO_DRIVE_MOTOR_COUNT; ++i) {
-        if(s_chassis.steer_feedback_valid[i]) {
-            valid_mask |= (uint8_t)(1u << i);
-        }
-    }
-    if(strcmp(reason, "periodic") == 0) {
-        (void)log_info("[转向反馈 mdeg norm/raw] id5=%ld/%ld id6=%ld/%ld id7=%ld/%ld id8=%ld/%ld valid=0x%02X",
-                       (long)(s_chassis.steer_feedback_angle[0] *
-                              CHASSIS_RAD_TO_MDEG),
-                       (long)(s_chassis.steer_feedback_raw_angle[0] *
-                              CHASSIS_RAD_TO_MDEG),
-                       (long)(s_chassis.steer_feedback_angle[1] *
-                              CHASSIS_RAD_TO_MDEG),
-                       (long)(s_chassis.steer_feedback_raw_angle[1] *
-                              CHASSIS_RAD_TO_MDEG),
-                       (long)(s_chassis.steer_feedback_angle[2] *
-                              CHASSIS_RAD_TO_MDEG),
-                       (long)(s_chassis.steer_feedback_raw_angle[2] *
-                              CHASSIS_RAD_TO_MDEG),
-                       (long)(s_chassis.steer_feedback_angle[3] *
-                              CHASSIS_RAD_TO_MDEG),
-                       (long)(s_chassis.steer_feedback_raw_angle[3] *
-                              CHASSIS_RAD_TO_MDEG),
-                       (unsigned int)valid_mask);
-        return;
-    }
-    (void)log_info("[转向反馈/%s mdeg] norm id5=%ld id6=%ld id7=%ld id8=%ld valid=0x%02X",
-                   reason,
-                   (long)(s_chassis.steer_feedback_angle[0] *
-                          CHASSIS_RAD_TO_MDEG),
-                   (long)(s_chassis.steer_feedback_angle[1] *
-                          CHASSIS_RAD_TO_MDEG),
-                   (long)(s_chassis.steer_feedback_angle[2] *
-                          CHASSIS_RAD_TO_MDEG),
-                   (long)(s_chassis.steer_feedback_angle[3] *
-                          CHASSIS_RAD_TO_MDEG),
-                   (unsigned int)valid_mask);
-    (void)log_info("[转向反馈/%s mdeg] raw  id5=%ld id6=%ld id7=%ld id8=%ld",
-                   reason,
-                   (long)(s_chassis.steer_feedback_raw_angle[0] *
-                          CHASSIS_RAD_TO_MDEG),
-                   (long)(s_chassis.steer_feedback_raw_angle[1] *
-                          CHASSIS_RAD_TO_MDEG),
-                   (long)(s_chassis.steer_feedback_raw_angle[2] *
-                          CHASSIS_RAD_TO_MDEG),
-                   (long)(s_chassis.steer_feedback_raw_angle[3] *
-                          CHASSIS_RAD_TO_MDEG));
-    if(strcmp(reason, "fault") == 0) {
-        const uint32_t now = stm32_time_now_ms();
-        (void)log_info("[转向反馈/fault] age_ms=%ld,%ld,%ld,%ld seq=%lu,%lu,%lu,%lu",
-                       (long)(int32_t)(now - s_chassis.steer_feedback_ms[0]),
-                       (long)(int32_t)(now - s_chassis.steer_feedback_ms[1]),
-                       (long)(int32_t)(now - s_chassis.steer_feedback_ms[2]),
-                       (long)(int32_t)(now - s_chassis.steer_feedback_ms[3]),
-                       (unsigned long)s_chassis.steer_feedback_sequence[0],
-                       (unsigned long)s_chassis.steer_feedback_sequence[1],
-                       (unsigned long)s_chassis.steer_feedback_sequence[2],
-                       (unsigned long)s_chassis.steer_feedback_sequence[3]);
-    }
 }
 
 static bool chassis_remote_is_safe_for_fault_clear(void) {
@@ -670,9 +451,6 @@ static void chassis_latch_fault(ChassisFault fault) {
     chassis_set_velocity(0.0f, 0.0f, 0.0f);
     chassis_send_stop_once();
     if(first_fault) {
-        if(s_chassis.state.initialized) {
-            chassis_log_steer_feedback("fault");
-        }
         (void)log_error("fault latched: %s", chassis_service_fault_str(fault));
     }
 }
@@ -695,29 +473,18 @@ static bool chassis_initialize_steering(void) {
     uint8_t i;
     stm32_time_delay_ms(100u);
     for(i = 0u; i < BENMO_DRIVE_MOTOR_COUNT; ++i) {
-        if(rs06_steer_motor_stop(&s_chassis.steer, s_chassis.steer_ids[i]) !=
-           RS06_STEER_STATUS_OK) {
-            return false;
-        }
-        stm32_time_delay_ms(5u);
         if(rs06_steer_motor_set_mode(&s_chassis.steer, s_chassis.steer_ids[i],
-                                     RS06_STEER_MODE_VELOCITY) !=
-           RS06_STEER_STATUS_OK) {
+                                     RS06_STEER_MODE_MIT) != RS06_STEER_STATUS_OK) {
             return false;
         }
         stm32_time_delay_ms(5u);
-        if(rs06_steer_motor_set_velocity_target(
-               &s_chassis.steer, s_chassis.steer_ids[i], 0.0f) !=
+        if(rs06_steer_motor_enable(&s_chassis.steer, s_chassis.steer_ids[i]) !=
            RS06_STEER_STATUS_OK) {
             return false;
         }
         stm32_time_delay_ms(5u);
     }
     return true;
-}
-
-static void chassis_log_initialized(void) {
-    (void)log_info("system initialized");
 }
 
 // ! ========================= 接 口 函 数 实 现 ========================= ! //
@@ -763,13 +530,14 @@ ChassisServiceStatus chassis_service_init(void) {
         return CHASSIS_SERVICE_STATUS_INIT_FAILED;
     }
 
+    if(!stm32_fdcan_port_init(STM32_FDCAN_BUS_STEER)) {
+        chassis_latch_fault(CHASSIS_FAULT_INITIALIZATION);
+        return CHASSIS_SERVICE_STATUS_INIT_FAILED;
+    }
     steer_config.ops = &s_steer_ops;
     steer_config.host_id = RS06_STEER_HOST_ID;
     if(rs06_steer_motor_init(&s_chassis.steer, &steer_config) !=
            RS06_STEER_STATUS_OK ||
-       !stm32_fdcan_port_register_rx_callback(STM32_FDCAN_BUS_STEER,
-                                              chassis_steer_rx, &s_chassis) ||
-       !stm32_fdcan_port_init(STM32_FDCAN_BUS_STEER) ||
        !chassis_initialize_steering()) {
         chassis_latch_fault(CHASSIS_FAULT_INITIALIZATION);
         return CHASSIS_SERVICE_STATUS_INIT_FAILED;
@@ -797,12 +565,12 @@ ChassisServiceStatus chassis_service_init(void) {
     }
 
     s_chassis.state.initialized = true;
-    s_chassis.steer_startup_state = CHASSIS_STEER_STARTUP_WAIT_FEEDBACK;
-    s_chassis.steer_startup_motor_index = 0u;
-    s_chassis.steer_startup_waiting_feedback = false;
+    s_chassis.steer_home_active = true;
     s_chassis.steer_home_stable_cycles = 0u;
     s_chassis.steer_home_start_ms = stm32_time_now_ms();
-    chassis_log_initialized();
+
+    log_info("system initialized");
+
     s_chassis.last_update_ms = stm32_time_now_ms();
     s_chassis.last_log_ms = s_chassis.last_update_ms;
     (void)benmo_drive_motor_reset_feedback_monitor(&s_chassis.drive);
@@ -842,74 +610,16 @@ ChassisServiceStatus chassis_service_update(void) {
         return CHASSIS_SERVICE_STATUS_FAULT_LATCHED;
     }
 
-    (void)chassis_take_steer_feedback_snapshot();
     now = stm32_time_now_ms();
     if((uint32_t)(now - s_chassis.last_update_ms) < CHASSIS_UPDATE_PERIOD_MS) {
         return CHASSIS_SERVICE_STATUS_OK;
     }
     s_chassis.last_update_ms = now;
     chassis_update_remote_command();
-    if(s_chassis.steer_startup_state == CHASSIS_STEER_STARTUP_READY) {
-        chassis_log_periodic(now);
-    }
-    (void)chassis_take_steer_feedback_snapshot();
-    now = stm32_time_now_ms();
-    if(s_chassis.steer_startup_state != CHASSIS_STEER_STARTUP_WAIT_FEEDBACK &&
-       chassis_steer_feedback_ready() && !chassis_steer_feedback_safe()) {
-        chassis_latch_fault(CHASSIS_FAULT_STEER_ANGLE_LIMIT);
-        chassis_send_stop_once();
-        return CHASSIS_SERVICE_STATUS_FAULT_LATCHED;
-    }
-    if(s_chassis.steer_startup_state == CHASSIS_STEER_STARTUP_WAIT_FEEDBACK) {
-        if(!chassis_steer_feedback_fresh(now)) {
-            if((uint32_t)(now - s_chassis.steer_home_start_ms) >=
-               CHASSIS_STEER_HOME_TIMEOUT_MS) {
-                chassis_latch_fault(CHASSIS_FAULT_STEER_FEEDBACK_TIMEOUT);
-                return CHASSIS_SERVICE_STATUS_FAULT_LATCHED;
-            }
-        }
-        else {
-            if(!chassis_steer_feedback_safe()) {
-                chassis_latch_fault(CHASSIS_FAULT_STEER_ANGLE_LIMIT);
-                return CHASSIS_SERVICE_STATUS_FAULT_LATCHED;
-            }
-            s_chassis.steer_startup_motor_index = 0u;
-            s_chassis.steer_startup_waiting_feedback = false;
-            s_chassis.steer_home_start_ms = now;
-            s_chassis.steer_startup_state = CHASSIS_STEER_STARTUP_PREPARE_HOME;
-        }
-    }
-    if(s_chassis.steer_startup_state == CHASSIS_STEER_STARTUP_PREPARE_HOME) {
-        const int8_t prepare_result = chassis_prepare_next_steering_motor(true);
-        if((uint32_t)(now - s_chassis.steer_home_start_ms) >=
-           CHASSIS_STEER_HOME_TIMEOUT_MS) {
-            chassis_latch_fault(CHASSIS_FAULT_STEER_FEEDBACK_TIMEOUT);
-            return CHASSIS_SERVICE_STATUS_FAULT_LATCHED;
-        }
-        if(prepare_result < 0) {
-            (void)chassis_record_send_result(false,
-                                             CHASSIS_FAULT_STEER_TRANSMIT);
-            return CHASSIS_SERVICE_STATUS_DEVICE_ERROR;
-        }
-        if(prepare_result > 0) {
-            s_chassis.steer_home_start_ms = now;
-            s_chassis.steer_startup_state = CHASSIS_STEER_STARTUP_HOME;
-        }
-    }
-    if(s_chassis.steer_startup_state == CHASSIS_STEER_STARTUP_HOME) {
+    if(s_chassis.steer_home_active) {
         bool steer_home_send_ok = true;
         bool drive_sends_ok = true;
-        const bool steer_home_done =
-            chassis_run_steer_home(now, &steer_home_send_ok);
-        if(!steer_home_send_ok) {
-            if(s_chassis.state.fault_latched) {
-                return CHASSIS_SERVICE_STATUS_FAULT_LATCHED;
-            }
-            (void)chassis_record_send_result(false,
-                                             CHASSIS_FAULT_STEER_TRANSMIT);
-            return CHASSIS_SERVICE_STATUS_DEVICE_ERROR;
-        }
-        if(!steer_home_done) {
+        if(!chassis_run_steer_home(now, &steer_home_send_ok)) {
             for(i = 0u; i < BENMO_DRIVE_MOTOR_COUNT; ++i) {
                 (void)benmo_drive_motor_set_target_rpm(&s_chassis.drive,
                                                        s_chassis.drive_ids[i],
@@ -920,45 +630,21 @@ ChassisServiceStatus chassis_service_update(void) {
                    BENMO_DRIVE_STATUS_OK) {
                 drive_sends_ok = false;
             }
-            if(!drive_sends_ok) {
+            if(!steer_home_send_ok) {
+                (void)chassis_record_send_result(false,
+                                                 CHASSIS_FAULT_STEER_TRANSMIT);
+            }
+            else if(!drive_sends_ok) {
                 (void)chassis_record_send_result(false,
                                                  CHASSIS_FAULT_DRIVE_TRANSMIT);
             }
             else {
                 (void)chassis_record_send_result(true, CHASSIS_FAULT_NONE);
             }
-            return drive_sends_ok ? CHASSIS_SERVICE_STATUS_OK
-                                  : CHASSIS_SERVICE_STATUS_DEVICE_ERROR;
+            return (steer_home_send_ok && drive_sends_ok)
+                       ? CHASSIS_SERVICE_STATUS_OK
+                       : CHASSIS_SERVICE_STATUS_DEVICE_ERROR;
         }
-    }
-    if(s_chassis.steer_startup_state == CHASSIS_STEER_STARTUP_SWITCH_PP) {
-        int8_t prepare_result;
-        if((uint32_t)(now - s_chassis.steer_home_start_ms) >=
-           CHASSIS_STEER_HOME_TIMEOUT_MS) {
-            chassis_latch_fault(CHASSIS_FAULT_STEER_FEEDBACK_TIMEOUT);
-            return CHASSIS_SERVICE_STATUS_FAULT_LATCHED;
-        }
-        prepare_result = chassis_prepare_next_steering_motor(false);
-        if(prepare_result < 0) {
-            (void)chassis_record_send_result(false,
-                                             CHASSIS_FAULT_STEER_TRANSMIT);
-            return CHASSIS_SERVICE_STATUS_DEVICE_ERROR;
-        }
-        if(prepare_result > 0) {
-            chassis_seed_steer_targets_from_feedback();
-            s_chassis.steer_startup_state = CHASSIS_STEER_STARTUP_READY;
-            (void)chassis_record_send_result(true, CHASSIS_FAULT_NONE);
-            (void)log_info("steer home done; PP ready");
-        }
-    }
-    if(s_chassis.steer_startup_state != CHASSIS_STEER_STARTUP_READY) {
-        for(i = 0u; i < BENMO_DRIVE_MOTOR_COUNT; ++i) {
-            (void)benmo_drive_motor_set_target_rpm(&s_chassis.drive,
-                                                   s_chassis.drive_ids[i], 0);
-        }
-        (void)benmo_drive_motor_update(&s_chassis.drive);
-        (void)benmo_drive_motor_request_next_feedback(&s_chassis.drive);
-        return CHASSIS_SERVICE_STATUS_OK;
     }
     if(steer_wheel_ik(&s_chassis.kinematics) != STEER_WHEEL_OK) {
         chassis_latch_fault(CHASSIS_FAULT_KINEMATICS);
@@ -979,20 +665,20 @@ ChassisServiceStatus chassis_service_update(void) {
     for(i = 0u; i < BENMO_DRIVE_MOTOR_COUNT; ++i) {
         int16_t rpm = (int16_t)(s_chassis.kinematics.control.wheels[i].wheel_omega *
                                 CHASSIS_RAD_S_TO_RPM);
-        const float raw_target = steer_home_raw_position_target(
-            s_chassis.kinematics.control.wheels[i].steer_angle,
-            s_chassis.steer_feedback_raw_angle[i]);
         bool steer_send_ok;
-        if(!isfinite(raw_target)) {
-            chassis_latch_fault(CHASSIS_FAULT_STEER_ANGLE_LIMIT);
-            return CHASSIS_SERVICE_STATUS_FAULT_LATCHED;
-        }
         (void)benmo_drive_motor_set_target_rpm(&s_chassis.drive,
                                                s_chassis.drive_ids[i], rpm);
         steer_send_ok =
-            rs06_steer_motor_set_raw_position_target(
+            rs06_steer_motor_set_mode(&s_chassis.steer,
+                                      s_chassis.steer_ids[i],
+                                      RS06_STEER_MODE_PP) ==
+                RS06_STEER_STATUS_OK &&
+            rs06_steer_motor_enable(&s_chassis.steer,
+                                    s_chassis.steer_ids[i]) ==
+                RS06_STEER_STATUS_OK &&
+            rs06_steer_motor_set_position_target(
                 &s_chassis.steer, s_chassis.steer_ids[i],
-                raw_target) ==
+                s_chassis.kinematics.control.wheels[i].steer_angle) ==
                 RS06_STEER_STATUS_OK;
         if(!steer_send_ok) {
             steer_sends_ok = false;
@@ -1026,6 +712,13 @@ ChassisServiceStatus chassis_service_update(void) {
     }
 
     s_chassis.state.update_count++;
+    if((uint32_t)(now - s_chassis.last_log_ms) >= CHASSIS_LOG_PERIOD_MS) {
+        s_chassis.last_log_ms = now;
+        log_info("[遥控指令 x1000] vx=%ld vy=%ld wz=%ld",
+                 (long)(s_chassis.state.command_vx * 1000.0f),
+                 (long)(s_chassis.state.command_vy * 1000.0f),
+                 (long)(s_chassis.state.command_wz * 1000.0f));
+    }
     return (drive_sends_ok && steer_sends_ok)
                ? CHASSIS_SERVICE_STATUS_OK
                : CHASSIS_SERVICE_STATUS_DEVICE_ERROR;
@@ -1051,17 +744,13 @@ ChassisServiceStatus chassis_service_fault_clear(void) {
         return CHASSIS_SERVICE_STATUS_UNSAFE_STATE;
     }
     for(i = 0u; i < BENMO_DRIVE_MOTOR_COUNT; ++i) {
-        s_chassis.steer_feedback_valid[i] = false;
-        if(rs06_steer_motor_stop(&s_chassis.steer, s_chassis.steer_ids[i]) !=
-               RS06_STEER_STATUS_OK ||
-           rs06_steer_motor_set_mode(&s_chassis.steer, s_chassis.steer_ids[i],
-                                     RS06_STEER_MODE_VELOCITY) !=
-               RS06_STEER_STATUS_OK ||
-           rs06_steer_motor_set_velocity_target(
-               &s_chassis.steer, s_chassis.steer_ids[i], 0.0f) !=
+        if(rs06_steer_motor_set_mode(&s_chassis.steer, s_chassis.steer_ids[i],
+                                     RS06_STEER_MODE_PP) != RS06_STEER_STATUS_OK ||
+           rs06_steer_motor_enable(&s_chassis.steer, s_chassis.steer_ids[i]) !=
                RS06_STEER_STATUS_OK) {
             return CHASSIS_SERVICE_STATUS_DEVICE_ERROR;
         }
+        s_chassis.steer_feedback_valid[i] = false;
     }
     (void)benmo_drive_motor_reset_feedback_monitor(&s_chassis.drive);
     s_chassis.consecutive_send_failures = 0u;
@@ -1069,13 +758,26 @@ ChassisServiceStatus chassis_service_fault_clear(void) {
     s_chassis.fault_clear_armed = false;
     s_chassis.state.fault = CHASSIS_FAULT_NONE;
     s_chassis.state.fault_latched = false;
-    s_chassis.steer_startup_state = CHASSIS_STEER_STARTUP_WAIT_FEEDBACK;
-    s_chassis.steer_startup_motor_index = 0u;
-    s_chassis.steer_startup_waiting_feedback = false;
+    s_chassis.steer_home_active = true;
     s_chassis.steer_home_stable_cycles = 0u;
     s_chassis.steer_home_start_ms = stm32_time_now_ms();
     chassis_set_velocity(0.0f, 0.0f, 0.0f);
     (void)log_info("[安全] fault cleared by explicit request");
+    return CHASSIS_SERVICE_STATUS_OK;
+}
+
+ChassisServiceStatus chassis_service_on_steer_feedback(uint8_t motor_id,
+                                                       float angle_rad) {
+    uint8_t index;
+    if(!s_chassis.state.initialized) {
+        return CHASSIS_SERVICE_STATUS_NOT_INITIALIZED;
+    }
+    if(!isfinite(angle_rad) || !chassis_steer_id_to_index(motor_id, &index)) {
+        return CHASSIS_SERVICE_STATUS_INVALID_PARAM;
+    }
+    s_chassis.steer_feedback_angle[index] = angle_rad;
+    s_chassis.steer_feedback_valid[index] = true;
+    s_chassis.kinematics.state.cur_wheels[index].steer_angle = angle_rad;
     return CHASSIS_SERVICE_STATUS_OK;
 }
 
@@ -1123,10 +825,6 @@ const char* chassis_service_fault_str(ChassisFault fault) {
             return "DRIVE_TRANSMIT";
         case CHASSIS_FAULT_STEER_TRANSMIT:
             return "STEER_TRANSMIT";
-        case CHASSIS_FAULT_STEER_FEEDBACK_TIMEOUT:
-            return "STEER_FEEDBACK_TIMEOUT";
-        case CHASSIS_FAULT_STEER_ANGLE_LIMIT:
-            return "STEER_ANGLE_LIMIT";
         case CHASSIS_FAULT_DRIVE_FEEDBACK_TIMEOUT:
             return "DRIVE_FEEDBACK_TIMEOUT";
         case CHASSIS_FAULT_KINEMATICS:
