@@ -972,7 +972,13 @@ ChassisServiceStatus chassis_service_update(void) {
     {
         float feedback_reference[BENMO_DRIVE_MOTOR_COUNT];
         for(i = 0u; i < BENMO_DRIVE_MOTOR_COUNT; ++i) {
-            feedback_reference[i] = s_chassis.steer_feedback_angle[i];
+            /* 纯旋转以零位选择成对的舵角/轮速，避免受前次 vy 舵角影响。 */
+            feedback_reference[i] =
+                (s_chassis.kinematics.control.vx == 0.0f &&
+                 s_chassis.kinematics.control.vy == 0.0f &&
+                 s_chassis.kinematics.control.wz != 0.0f)
+                    ? 0.0f
+                    : s_chassis.steer_feedback_angle[i];
         }
         if(steer_wheel_optimize_targets(&s_chassis.kinematics,
                                         feedback_reference) !=
@@ -992,6 +998,11 @@ ChassisServiceStatus chassis_service_update(void) {
         if(!isfinite(raw_target)) {
             chassis_latch_fault(CHASSIS_FAULT_STEER_ANGLE_LIMIT);
             return CHASSIS_SERVICE_STATUS_FAULT_LATCHED;
+        }
+        /* 仅纯平移时补偿 ID 1/4 轮毂方向，含 wz 的指令保持原逻辑。 */
+        if(s_chassis.kinematics.control.wz == 0.0f &&
+           (s_chassis.drive_ids[i] == 1u || s_chassis.drive_ids[i] == 4u)) {
+            rpm = (int16_t)-rpm;
         }
         (void)benmo_drive_motor_set_target_rpm(&s_chassis.drive,
                                                s_chassis.drive_ids[i], rpm);
