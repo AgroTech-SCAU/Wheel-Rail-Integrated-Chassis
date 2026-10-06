@@ -999,7 +999,7 @@ ChassisServiceStatus chassis_service_update(void) {
             chassis_latch_fault(CHASSIS_FAULT_STEER_ANGLE_LIMIT);
             return CHASSIS_SERVICE_STATUS_FAULT_LATCHED;
         }
-        /* 仅纯平移时补偿 ID 1/4 轮毂方向，含 wz 的指令保持原逻辑。 */
+        /* 保留原有纯平移 ID 1/4 轮毂方向补偿。 */
         if(s_chassis.kinematics.control.wz == 0.0f &&
            (s_chassis.drive_ids[i] == 1u || s_chassis.drive_ids[i] == 4u)) {
             rpm = (int16_t)-rpm;
