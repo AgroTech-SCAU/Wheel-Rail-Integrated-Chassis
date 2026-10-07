@@ -90,6 +90,7 @@ typedef struct {
     volatile bool drive_frame_pending;
     uint8_t drive_ids[BENMO_DRIVE_MOTOR_COUNT];
     uint8_t steer_ids[BENMO_DRIVE_MOTOR_COUNT];
+    float drive_speed_scale; /**< SWC 仅缩放本末 ID 1-4 的目标转速 */
     float last_steer_target[BENMO_DRIVE_MOTOR_COUNT];
     volatile float pending_steer_angle[BENMO_DRIVE_MOTOR_COUNT];
     volatile uint32_t pending_steer_feedback_ms[BENMO_DRIVE_MOTOR_COUNT];
@@ -300,6 +301,7 @@ static void chassis_set_velocity(float vx, float vy, float wz) {
 static void chassis_update_remote_command(void) {
     FsIa10bData remote;
     RemoteSpeedLimit limit;
+    s_chassis.drive_speed_scale = 0.5f;
     if(fs_ia10b_get_data(&s_chassis.receiver, &remote) != FS_IA10B_STATUS_OK ||
        !fs_ia10b_is_online(&s_chassis.receiver, CHASSIS_REMOTE_TIMEOUT_MS)) {
         s_chassis.state.remote_online = false;
@@ -314,6 +316,15 @@ static void chassis_update_remote_command(void) {
         return;
     }
     s_chassis.state.remote_enabled = true;
+    /* iBUS 1000/1500/2000 分别对应 SWC 负/中/正档。 */
+    if(chassis_remote_switch_is(remote.channel[FS_IA10B_CH_SWC],
+                                REMOTE_SWITCH_HIGH)) {
+        s_chassis.drive_speed_scale = 0.25f;
+    }
+    else if(chassis_remote_switch_is(remote.channel[FS_IA10B_CH_SWC],
+                                     REMOTE_SWITCH_LOW)) {
+        s_chassis.drive_speed_scale = 1.0f;
+    }
     limit = chassis_remote_speed_limit(remote.channel[REMOTE_CH_SWB]);
     chassis_set_velocity(-chassis_remote_channel_to_speed(
                              remote.channel[REMOTE_CH_RIGHT_Y], limit.max_vx),
@@ -1004,6 +1015,11 @@ ChassisServiceStatus chassis_service_update(void) {
            (s_chassis.drive_ids[i] == 1u || s_chassis.drive_ids[i] == 4u)) {
             rpm = (int16_t)-rpm;
         }
+        /* 先保留原 +/-210 RPM 限幅，再按 SWC 缩放；原有方向不变。 */
+        rpm = (int16_t)(chassis_limit_float((float)rpm,
+                                           BENMO_DRIVE_MOTOR_RPM_MIN,
+                                           BENMO_DRIVE_MOTOR_RPM_MAX) *
+                        s_chassis.drive_speed_scale);
         (void)benmo_drive_motor_set_target_rpm(&s_chassis.drive,
                                                s_chassis.drive_ids[i], rpm);
         steer_send_ok =

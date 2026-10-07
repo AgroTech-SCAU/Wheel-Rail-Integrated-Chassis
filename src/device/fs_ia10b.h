@@ -23,6 +23,11 @@
 #define FS_IA10B_CHANNEL_COUNT 14u
 
 /**
+ * @brief SWC 三档开关通道索引：CH7 对应数组下标 6
+ */
+#define FS_IA10B_CH_SWC 6u
+
+/**
  * @brief 中断接收字节队列长度
  */
 #define FS_IA10B_RX_QUEUE_LEN 64u
