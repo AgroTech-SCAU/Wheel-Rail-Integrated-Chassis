@@ -63,6 +63,22 @@ typedef struct {
 } SteerWheelModel;
 
 /**
+ * @brief 平移偏航前馈补偿配置，仅作用于逆运动学的角速度输入
+ * @param enabled 是否启用偏航补偿
+ * @param k_vx x 方向速度对应的有符号补偿系数，单位 rad/m
+ * @param k_vy y 方向速度对应的有符号补偿系数，单位 rad/m
+ * @param v_deadband 补偿用的单轴线速度死区，单位 m/s，必须非负
+ * @note wz_解算 = wz_指令 + k_vx * vx_有效 + k_vy * vy_有效；
+ *       |v| <= v_deadband 时该轴不产生补偿，原平移速度保持不变
+ */
+typedef struct {
+    bool enabled;
+    float k_vx;
+    float k_vy;
+    float v_deadband;
+} SteerWheelYawBiasConfig;
+
+/**
  * @brief 舵轮底盘控制输入和 IK 输出
  * @param wheels 四个舵轮目标输出，顺序为 FL、FR、RR、RL
  * @param vx 底盘目标 x 方向线速度，单位 m/s
@@ -93,12 +109,14 @@ typedef struct {
 /**
  * @brief 舵轮运动学实例数据
  * @param model 底盘模型参数
+ * @param yaw_bias 平移偏航前馈补偿配置
  * @param control 控制输入和 IK 输出
  * @param state 反馈状态和 FK 输出
  * @param initialized 初始化标志，true 表示已初始化
  */
 typedef struct {
     SteerWheelModel model;
+    SteerWheelYawBiasConfig yaw_bias;
     SteerWheelControl control;
     SteerWheelState state;
     /* 最近角优化状态：保存等效角选择，避免多周期后正反方案来回跳变 */

@@ -734,26 +734,43 @@ static void chassis_log_initialized(void) {
 // ! ========================= 接 口 函 数 实 现 ========================= ! //
 
 ChassisServiceStatus chassis_service_init(void) {
+    const ChassisServiceConfig config = {
+        .model = {
+            .length = CHASSIS_LENGTH_M,
+            .width = CHASSIS_WIDTH_M,
+            .wheel_radius = CHASSIS_WHEEL_RADIUS_M,
+            .max_wheel_linear_speed = CHASSIS_MAX_WHEEL_LINEAR_SPEED_M_S,
+        },
+        .yaw_bias = { 0 },
+    };
+    return chassis_service_init_with_config(&config);
+}
+
+ChassisServiceStatus chassis_service_init_with_config(
+    const ChassisServiceConfig* config) {
     FsIa10bConfig receiver_config;
     BenmoDriveMotorConfig drive_config;
     Rs06SteerMotorConfig steer_config;
-    SteerWheelModel model;
     LogConfig log_config;
     uint8_t i;
+
+    if(config == NULL || !isfinite(config->yaw_bias.k_vx) ||
+       !isfinite(config->yaw_bias.k_vy) ||
+       !isfinite(config->yaw_bias.v_deadband) ||
+       config->yaw_bias.v_deadband < 0.0f) {
+        return CHASSIS_SERVICE_STATUS_INVALID_PARAM;
+    }
 
     memset(&s_chassis, 0, sizeof(s_chassis));
     for(i = 0u; i < BENMO_DRIVE_MOTOR_COUNT; ++i) {
         s_chassis.drive_ids[i] = (uint8_t)(i + 1u);
         s_chassis.steer_ids[i] = (uint8_t)(i + 5u);
     }
-    model.length = CHASSIS_LENGTH_M;
-    model.width = CHASSIS_WIDTH_M;
-    model.wheel_radius = CHASSIS_WHEEL_RADIUS_M;
-    model.max_wheel_linear_speed = CHASSIS_MAX_WHEEL_LINEAR_SPEED_M_S;
-    if(steer_wheel_init(&s_chassis.kinematics, model) != STEER_WHEEL_OK) {
+    if(steer_wheel_init(&s_chassis.kinematics, config->model) != STEER_WHEEL_OK) {
         chassis_latch_fault(CHASSIS_FAULT_INITIALIZATION);
         return CHASSIS_SERVICE_STATUS_INIT_FAILED;
     }
+    s_chassis.kinematics.yaw_bias = config->yaw_bias;
 
     stm32_board_chassis_power_enable();
     if(!stm32_fdcan_port_register_rx_callback(STM32_FDCAN_BUS_DRIVE,

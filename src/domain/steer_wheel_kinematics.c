@@ -39,6 +39,7 @@ static void sw_get_wheel_pos(const SteerWheelModel* model, float x[4], float y[4
 static float sw_wrap_pi(float angle);
 static float sw_angle_delta(float target, float reference);
 static bool sw_model_valid(const SteerWheelModel* model);
+static bool sw_compensated_wz(const SteerWheel* steer_wheel, float* wz);
 
 // ! ========================= 接 口 函 数 实 现 ========================= ! //
 
@@ -55,6 +56,7 @@ SteelWheelErrorCode steer_wheel_init(SteerWheel* steer_wheel, SteerWheelModel mo
         return sw.INVALID_MODEL;
 
     steer_wheel->model = model;
+    steer_wheel->yaw_bias = (SteerWheelYawBiasConfig){ 0 };
 
     for(uint8_t i = 0; i < 4; ++i) {
         steer_wheel->reverse_drive[i] = false;
@@ -147,9 +149,11 @@ SteelWheelErrorCode steer_wheel_ik(SteerWheel* steer_wheel) {
 
     const float vx = steer_wheel->control.vx;
     const float vy = steer_wheel->control.vy;
-    const float wz = steer_wheel->control.wz;
+    float wz;
 
-    if(!isfinite(vx) || !isfinite(vy) || !isfinite(wz))
+    if(!isfinite(vx) || !isfinite(vy) ||
+       !isfinite(steer_wheel->control.wz) ||
+       !sw_compensated_wz(steer_wheel, &wz))
         return sw.INVALID_PARAM;
 
     float max_abs_linear_speed = 0.0f;
@@ -196,6 +200,7 @@ SteelWheelErrorCode steer_wheel_apply_legacy_57_correction(SteerWheel* steer_whe
     float half_length;
     float half_width;
     float inverse_wz;
+    float compensated_wz;
     uint8_t i;
 
     if(steer_wheel == NULL)
@@ -205,14 +210,16 @@ SteelWheelErrorCode steer_wheel_apply_legacy_57_correction(SteerWheel* steer_whe
     if(!sw_model_valid(&steer_wheel->model))
         return sw.INVALID_MODEL;
     if(!isfinite(steer_wheel->control.vx) || !isfinite(steer_wheel->control.vy) ||
-       !isfinite(steer_wheel->control.wz))
+       !isfinite(steer_wheel->control.wz) ||
+       !sw_compensated_wz(steer_wheel, &compensated_wz))
         return sw.INVALID_PARAM;
+    /* 保留原始旋转指令的分支判定，平移补偿不触发旧的 90 度修正。 */
     if(fabsf(steer_wheel->control.wz) <= SW_EPS)
         return sw.OK;
 
     half_length = steer_wheel->model.length * 0.5f;
     half_width = steer_wheel->model.width * 0.5f;
-    inverse_wz = -steer_wheel->control.wz;
+    inverse_wz = -compensated_wz;
 
     for(i = 0u; i < 2u; ++i) {
         const uint8_t index = indexes[i];
@@ -347,6 +354,26 @@ const char* steer_wheel_error_code_to_str(SteelWheelErrorCode status) {
 #undef X
 
 // ! ========================= 私 有 函 数 实 现 ========================= ! //
+
+/**
+ * @brief 从原始速度指令计算补偿角速度，不回写 control.wz，避免重复累加
+ */
+static bool sw_compensated_wz(const SteerWheel* steer_wheel, float* wz) {
+    const SteerWheelYawBiasConfig* bias = &steer_wheel->yaw_bias;
+    *wz = steer_wheel->control.wz;
+    if(!bias->enabled)
+        return isfinite(*wz);
+    if(!isfinite(bias->k_vx) || !isfinite(bias->k_vy) ||
+       !isfinite(bias->v_deadband) || bias->v_deadband < 0.0f)
+        return false;
+
+    const float vx = fabsf(steer_wheel->control.vx) > bias->v_deadband
+                         ? steer_wheel->control.vx : 0.0f;
+    const float vy = fabsf(steer_wheel->control.vy) > bias->v_deadband
+                         ? steer_wheel->control.vy : 0.0f;
+    *wz += bias->k_vx * vx + bias->k_vy * vy;
+    return isfinite(*wz);
+}
 
 /**
  * @brief 根据底盘模型计算四个轮模块相对底盘中心的位置

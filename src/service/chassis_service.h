@@ -9,7 +9,19 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "steer_wheel_kinematics.h"
+
 // ! ========================= 接 口 变 量 / Typedef 声 明 ========================= ! //
+
+/**
+ * @brief 底盘运动学初始化配置
+ * @param model 底盘几何参数和单轮速度上限
+ * @param yaw_bias 平移偏航前馈补偿参数，在逆运动学中使用
+ */
+typedef struct {
+    SteerWheelModel model;
+    SteerWheelYawBiasConfig yaw_bias;
+} ChassisServiceConfig;
 
 /**
  * @brief 底盘服务调用状态码
@@ -62,6 +74,13 @@ typedef struct {
  * @return ChassisServiceStatus 状态码
  */
 ChassisServiceStatus chassis_service_init(void);
+/**
+ * @brief 使用指定运动学配置初始化底盘服务及全部依赖
+ * @param config 配置指针；初始化时复制参数，无需长期保留
+ * @return ChassisServiceStatus 状态码
+ */
+ChassisServiceStatus chassis_service_init_with_config(
+    const ChassisServiceConfig* config);
 /**
  * @brief 执行一次底盘服务轮询
  * @return ChassisServiceStatus 状态码
