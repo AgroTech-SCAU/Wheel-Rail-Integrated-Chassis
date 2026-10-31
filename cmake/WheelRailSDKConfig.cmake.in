@@ -1,0 +1,6 @@
+@PACKAGE_INIT@
+
+set(WheelRailSDK_VERSION "@PROJECT_VERSION@")
+set(WheelRailSDK_WITH_STM32_PORT @WHEEL_RAIL_SDK_STM32_PORT@)
+include("${CMAKE_CURRENT_LIST_DIR}/WheelRailSDKTargets.cmake")
+check_required_components(WheelRailSDK)
