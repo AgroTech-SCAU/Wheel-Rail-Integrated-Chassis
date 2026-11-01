@@ -7,7 +7,7 @@
 
 #include "main.h" // IWYU pragma: keep
 
-#include "wheel_rail_sdk.h"
+#include "chassis_service.h"
 
 // ! ========================= 变 量 声 明 ========================= ! //
 
@@ -19,7 +19,7 @@ static const ChassisServiceConfig s_chassis_config = {
         .max_wheel_linear_speed = 0.45f,
     },
     /* 平移偏航前馈补偿：wz + k_vx * vx_有效 + k_vy * vy_有效。 */
-    /* 系数需按本车标定；补偿公式与兼容约定见 README.md 第 11.2 节。 */
+    /* 参考系数需按本车标定，步骤见 docs/yaw_bias_tuning.md。 */
     .yaw_bias = {
         .enabled = true,       /* false 可关闭补偿 */
         .k_vx = -0.065f,       /* x 轴有符号补偿系数，单位 rad/m */

@@ -114,11 +114,6 @@ typedef struct {
     uint32_t fault_clear_after_frame_count;
     bool stop_sent;
     bool fault_clear_armed;
-    ChassisControlSource control_source;
-    float external_velocity[3];
-    uint32_t external_command_ms;
-    uint32_t command_timeout_ms;
-    bool external_command_valid;
 } ChassisServiceContext;
 
 // ! ========================= 私 有 函 数 声 明 ========================= ! //
@@ -137,7 +132,6 @@ static float chassis_remote_channel_to_speed(uint16_t value, float maximum);
 static RemoteSpeedLimit chassis_remote_speed_limit(uint16_t switch_value);
 static void chassis_set_velocity(float vx, float vy, float wz);
 static void chassis_update_remote_command(void);
-static void chassis_update_command(uint32_t now);
 static bool chassis_remote_is_safe_for_fault_clear(void);
 static bool chassis_steer_id_to_index(uint8_t motor_id, uint8_t* out_index);
 static bool chassis_steer_feedback_ready(void);
@@ -338,29 +332,6 @@ static void chassis_update_remote_command(void) {
                              remote.channel[REMOTE_CH_RIGHT_X], limit.max_vy),
                          -chassis_remote_channel_to_speed(
                              remote.channel[REMOTE_CH_LEFT_X], limit.max_wz));
-}
-
-static bool chassis_external_command_is_fresh(uint32_t now) {
-    return s_chassis.external_command_valid &&
-           (uint32_t)(now - s_chassis.external_command_ms) <
-               s_chassis.command_timeout_ms;
-}
-
-static void chassis_update_command(uint32_t now) {
-    if(s_chassis.control_source == CHASSIS_CONTROL_REMOTE) {
-        chassis_update_remote_command();
-        return;
-    }
-    /* 外部指令不经过遥控映射和 SWC 缩放，其余控制链保持原样。 */
-    s_chassis.drive_speed_scale = 1.0f;
-    if(!chassis_external_command_is_fresh(now)) {
-        s_chassis.external_command_valid = false;
-        chassis_set_velocity(0.0f, 0.0f, 0.0f);
-        return;
-    }
-    chassis_set_velocity(s_chassis.external_velocity[0],
-                         s_chassis.external_velocity[1],
-                         s_chassis.external_velocity[2]);
 }
 
 static bool chassis_steer_id_to_index(uint8_t motor_id, uint8_t* out_index) {
@@ -707,7 +678,6 @@ static void chassis_latch_fault(ChassisFault fault) {
         s_chassis.state.fault_latched = true;
     }
     s_chassis.fault_clear_armed = false;
-    s_chassis.external_command_valid = false;
     chassis_set_velocity(0.0f, 0.0f, 0.0f);
     chassis_send_stop_once();
     if(first_fault) {
@@ -763,7 +733,7 @@ static void chassis_log_initialized(void) {
 
 // ! ========================= 接 口 函 数 实 现 ========================= ! //
 
-ChassisServiceStatus chassis_service_get_default_config(ChassisServiceConfig* out) {
+ChassisServiceStatus chassis_service_init(void) {
     const ChassisServiceConfig config = {
         .model = {
             .length = CHASSIS_LENGTH_M,
@@ -772,19 +742,7 @@ ChassisServiceStatus chassis_service_get_default_config(ChassisServiceConfig* ou
             .max_wheel_linear_speed = CHASSIS_MAX_WHEEL_LINEAR_SPEED_M_S,
         },
         .yaw_bias = { 0 },
-        .control_source = CHASSIS_CONTROL_REMOTE,
-        .command_timeout_ms = CHASSIS_REMOTE_TIMEOUT_MS,
     };
-    if(out == NULL) {
-        return CHASSIS_SERVICE_STATUS_INVALID_PARAM;
-    }
-    *out = config;
-    return CHASSIS_SERVICE_STATUS_OK;
-}
-
-ChassisServiceStatus chassis_service_init(void) {
-    ChassisServiceConfig config;
-    (void)chassis_service_get_default_config(&config);
     return chassis_service_init_with_config(&config);
 }
 
@@ -799,24 +757,11 @@ ChassisServiceStatus chassis_service_init_with_config(
     if(config == NULL || !isfinite(config->yaw_bias.k_vx) ||
        !isfinite(config->yaw_bias.k_vy) ||
        !isfinite(config->yaw_bias.v_deadband) ||
-       config->yaw_bias.v_deadband < 0.0f ||
-       (config->control_source != CHASSIS_CONTROL_REMOTE &&
-        config->control_source != CHASSIS_CONTROL_EXTERNAL) ||
-       config->command_timeout_ms > 0x7FFFFFFFu) {
+       config->yaw_bias.v_deadband < 0.0f) {
         return CHASSIS_SERVICE_STATUS_INVALID_PARAM;
-    }
-    /* 防止已启动的中断/DMA 在上下文被清零时继续访问；运行中禁止重初始化。 */
-    if(s_chassis.state.initialized || s_chassis.drive.initialized ||
-       s_chassis.steer.initialized) {
-        return CHASSIS_SERVICE_STATUS_UNSAFE_STATE;
     }
 
     memset(&s_chassis, 0, sizeof(s_chassis));
-    s_chassis.control_source = config->control_source;
-    s_chassis.state.control_source = config->control_source;
-    s_chassis.command_timeout_ms = config->command_timeout_ms == 0u
-                                      ? CHASSIS_REMOTE_TIMEOUT_MS
-                                      : config->command_timeout_ms;
     for(i = 0u; i < BENMO_DRIVE_MOTOR_COUNT; ++i) {
         s_chassis.drive_ids[i] = (uint8_t)(i + 1u);
         s_chassis.steer_ids[i] = (uint8_t)(i + 5u);
@@ -858,18 +803,16 @@ ChassisServiceStatus chassis_service_init_with_config(
         return CHASSIS_SERVICE_STATUS_INIT_FAILED;
     }
 
-    if(config->control_source == CHASSIS_CONTROL_REMOTE) {
-        if(!stm32_uart5_register_callbacks(
-               chassis_uart_rx_complete, chassis_uart_error, &s_chassis.receiver)) {
-            chassis_latch_fault(CHASSIS_FAULT_INITIALIZATION);
-            return CHASSIS_SERVICE_STATUS_INIT_FAILED;
-        }
-        receiver_config.ops = &s_receiver_ops;
-        if(fs_ia10b_init(&s_chassis.receiver, &receiver_config) !=
-           FS_IA10B_STATUS_OK) {
-            chassis_latch_fault(CHASSIS_FAULT_INITIALIZATION);
-            return CHASSIS_SERVICE_STATUS_INIT_FAILED;
-        }
+    if(!stm32_uart5_register_callbacks(
+           chassis_uart_rx_complete, chassis_uart_error, &s_chassis.receiver)) {
+        chassis_latch_fault(CHASSIS_FAULT_INITIALIZATION);
+        return CHASSIS_SERVICE_STATUS_INIT_FAILED;
+    }
+    receiver_config.ops = &s_receiver_ops;
+    if(fs_ia10b_init(&s_chassis.receiver, &receiver_config) !=
+       FS_IA10B_STATUS_OK) {
+        chassis_latch_fault(CHASSIS_FAULT_INITIALIZATION);
+        return CHASSIS_SERVICE_STATUS_INIT_FAILED;
     }
 
     log_config.ops = &s_log_ops;
@@ -906,9 +849,7 @@ ChassisServiceStatus chassis_service_update(void) {
         }
         return CHASSIS_SERVICE_STATUS_NOT_INITIALIZED;
     }
-    if(s_chassis.control_source == CHASSIS_CONTROL_REMOTE) {
-        (void)fs_ia10b_maintain(&s_chassis.receiver);
-    }
+    (void)fs_ia10b_maintain(&s_chassis.receiver);
     if(s_chassis.drive_frame_pending) {
         Stm32FdcanFrame frame;
         uint8_t i;
@@ -935,7 +876,7 @@ ChassisServiceStatus chassis_service_update(void) {
         return CHASSIS_SERVICE_STATUS_OK;
     }
     s_chassis.last_update_ms = now;
-    chassis_update_command(now);
+    chassis_update_remote_command();
     if(s_chassis.steer_startup_state == CHASSIS_STEER_STARTUP_READY) {
         chassis_log_periodic(now);
     }
@@ -1140,33 +1081,6 @@ ChassisServiceStatus chassis_service_update(void) {
                : CHASSIS_SERVICE_STATUS_DEVICE_ERROR;
 }
 
-ChassisServiceStatus chassis_service_set_velocity(float vx, float vy, float wz) {
-    const bool is_zero = vx == 0.0f && vy == 0.0f && wz == 0.0f;
-    if(!isfinite(vx) || !isfinite(vy) || !isfinite(wz) ||
-       fabsf(vx) > REMOTE_FINAL_LIMIT || fabsf(vy) > REMOTE_FINAL_LIMIT ||
-       fabsf(wz) > REMOTE_FINAL_LIMIT) {
-        return CHASSIS_SERVICE_STATUS_INVALID_PARAM;
-    }
-    if(!s_chassis.state.initialized) {
-        return CHASSIS_SERVICE_STATUS_NOT_INITIALIZED;
-    }
-    if(s_chassis.control_source != CHASSIS_CONTROL_EXTERNAL) {
-        return CHASSIS_SERVICE_STATUS_UNSAFE_STATE;
-    }
-    if(s_chassis.state.fault_latched && !is_zero) {
-        return CHASSIS_SERVICE_STATUS_FAULT_LATCHED;
-    }
-    if(s_chassis.steer_startup_state != CHASSIS_STEER_STARTUP_READY && !is_zero) {
-        return CHASSIS_SERVICE_STATUS_UNSAFE_STATE;
-    }
-    s_chassis.external_velocity[0] = vx;
-    s_chassis.external_velocity[1] = vy;
-    s_chassis.external_velocity[2] = wz;
-    s_chassis.external_command_ms = stm32_time_now_ms();
-    s_chassis.external_command_valid = true;
-    return CHASSIS_SERVICE_STATUS_OK;
-}
-
 ChassisServiceStatus chassis_service_stop(void) {
     if(!s_chassis.drive.initialized && !s_chassis.steer.initialized) {
         return CHASSIS_SERVICE_STATUS_NOT_INITIALIZED;
@@ -1182,18 +1096,8 @@ ChassisServiceStatus chassis_service_fault_clear(void) {
     if(!s_chassis.state.initialized) {
         return CHASSIS_SERVICE_STATUS_NOT_INITIALIZED;
     }
-    if(!s_chassis.state.fault_latched) {
-        return CHASSIS_SERVICE_STATUS_UNSAFE_STATE;
-    }
-    if(s_chassis.control_source == CHASSIS_CONTROL_EXTERNAL) {
-        if(!chassis_external_command_is_fresh(stm32_time_now_ms()) ||
-           s_chassis.external_velocity[0] != 0.0f ||
-           s_chassis.external_velocity[1] != 0.0f ||
-           s_chassis.external_velocity[2] != 0.0f) {
-            return CHASSIS_SERVICE_STATUS_UNSAFE_STATE;
-        }
-    }
-    else if(!chassis_remote_is_safe_for_fault_clear()) {
+    if(!s_chassis.state.fault_latched ||
+       !chassis_remote_is_safe_for_fault_clear()) {
         return CHASSIS_SERVICE_STATUS_UNSAFE_STATE;
     }
     for(i = 0u; i < BENMO_DRIVE_MOTOR_COUNT; ++i) {
@@ -1215,7 +1119,6 @@ ChassisServiceStatus chassis_service_fault_clear(void) {
     s_chassis.fault_clear_armed = false;
     s_chassis.state.fault = CHASSIS_FAULT_NONE;
     s_chassis.state.fault_latched = false;
-    s_chassis.external_command_valid = false;
     s_chassis.steer_startup_state = CHASSIS_STEER_STARTUP_WAIT_FEEDBACK;
     s_chassis.steer_startup_motor_index = 0u;
     s_chassis.steer_startup_waiting_feedback = false;
@@ -1233,11 +1136,6 @@ ChassisServiceStatus chassis_service_get_state(ChassisServiceState* out) {
     }
     critical_state = stm32_critical_enter();
     *out = s_chassis.state;
-    out->ready = s_chassis.state.initialized && !s_chassis.state.fault_latched &&
-                 s_chassis.steer_startup_state == CHASSIS_STEER_STARTUP_READY;
-    out->command_online = s_chassis.control_source == CHASSIS_CONTROL_EXTERNAL
-                              ? chassis_external_command_is_fresh(stm32_time_now_ms())
-                              : s_chassis.state.remote_online;
     stm32_critical_exit(critical_state);
     return CHASSIS_SERVICE_STATUS_OK;
 }

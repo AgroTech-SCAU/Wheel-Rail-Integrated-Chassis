@@ -35,7 +35,6 @@ targets:
         - src/infra
         - src/platform
         - src/service
-        - sdk
       libList: []
     excludeList: []
     settings: {}
@@ -111,7 +110,6 @@ targets:
         - src/infra
         - src/platform
         - src/service
-        - sdk
       libList: []
     excludeList: []
     settings: {}
