@@ -1,0 +1,3 @@
+@PACKAGE_INIT@
+include("${CMAKE_CURRENT_LIST_DIR}/wheel_railTargets.cmake")
+check_required_components(wheel_rail)

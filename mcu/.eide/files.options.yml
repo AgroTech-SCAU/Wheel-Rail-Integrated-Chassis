@@ -1,0 +1,6 @@
+version: "2.1"
+options:
+    Debug:
+        files: {}
+    Release:
+        files: {}

@@ -1,16 +1,16 @@
-.settings/
-build/
+mcu/.settings/
+mcu/build/
 
-Core/*
-!Core/Src/
-Core/Src/*
-!Core/Src/main.c
+mcu/Core/*
+!mcu/Core/Src/
+mcu/Core/Src/*
+!mcu/Core/Src/main.c
 
-docs/
-Drivers/
+mcu/docs/
+mcu/Drivers/
 
-.cproject
-.mxproject
-.project
-STM32H723VGTX_FLASH.ld
-STM32H723VGTX_RAM.ld
+mcu/.cproject
+mcu/.mxproject
+mcu/.project
+mcu/STM32H723VGTX_FLASH.ld
+mcu/STM32H723VGTX_RAM.ld
